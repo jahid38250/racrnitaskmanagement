@@ -72,6 +72,10 @@ export const OvertimeModal: React.FC<OvertimeModalProps> = ({
   const handleRequestOvertime = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!task) return;
+    if (![120, 180, 240].includes(Number(durationMinutes))) {
+      toast.error('Overtime must be 2 hours (minimum), 3 hours, or 4 hours (maximum)');
+      return;
+    }
     if (!reason.trim()) {
       toast.error('Please provide an overtime justification reason');
       return;
@@ -200,18 +204,17 @@ export const OvertimeModal: React.FC<OvertimeModalProps> = ({
 
             <div className="grid grid-cols-2 gap-4 text-xs">
               <div>
-                <label className="block text-gray-400 mb-1">Overtime Duration</label>
+                <label className="block text-gray-400 mb-1">
+                  Overtime Duration <span className="text-purple-400 font-semibold">(Min 2h • Max 4h)</span>
+                </label>
                 <select
                   value={durationMinutes}
                   onChange={e => setDurationMinutes(Number(e.target.value))}
                   className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-white font-mono"
                 >
-                  <option value={30}>30 Minutes (0.5 Hour)</option>
-                  <option value={60}>60 Minutes (1 Hour)</option>
-                  <option value={90}>90 Minutes (1.5 Hours)</option>
-                  <option value={120}>120 Minutes (2 Hours)</option>
-                  <option value={180}>180 Minutes (3 Hours)</option>
-                  <option value={240}>240 Minutes (4 Hours)</option>
+                  <option value={120}>2 Hours (120 Minutes) — Minimum</option>
+                  <option value={180}>3 Hours (180 Minutes)</option>
+                  <option value={240}>4 Hours (240 Minutes) — Highest</option>
                 </select>
               </div>
 

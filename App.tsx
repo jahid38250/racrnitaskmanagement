@@ -7807,25 +7807,25 @@ export default function App() {
                   )}
                 </div>
                 <div className="overflow-x-auto max-h-[620px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                  <table className="w-full text-left border-collapse table-auto">
+                  <table className="w-full text-center border-collapse table-auto">
                     <thead className="sticky top-0 bg-[#0e0e12] z-20 shadow-md border-b border-white/15">
                       <tr className="text-gray-100 text-[13px] font-bold tracking-wider whitespace-nowrap">
-                        <th className="px-3 py-3.5 text-left text-gray-100 font-bold min-w-[85px]">Task ID</th>
-                        <th className="px-3 py-3.5 text-left text-gray-100 font-bold min-w-[170px] max-w-[250px]">Title & Assigned</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[105px]">Concern</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[90px]">Model</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[80px]">Urgency</th>
+                        <th className="px-3 py-3.5 text-center text-gray-100 font-bold min-w-[90px]">Task ID</th>
+                        <th className="px-3 py-3.5 text-center text-gray-100 font-bold min-w-[200px] max-w-[260px]">Title & Assigned</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[110px]">Concern</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[95px]">Model</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[95px]">Urgency</th>
                         {canViewPoints && (
-                          <th className="px-2 py-3.5 text-center text-gray-100 font-bold min-w-[60px]">Points</th>
+                          <th className="px-2 py-3.5 text-center text-gray-100 font-bold min-w-[70px]">Points</th>
                         )}
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[95px]">Technician Type</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[105px]">Start Time</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[110px]">Complete Time</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[90px]">Status</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[125px]">Progress</th>
-                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[90px]">Deadline</th>
-                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[85px]">Fix It</th>
-                        <th className="px-3 py-3.5 text-right text-gray-100 font-bold min-w-[170px]">Action</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[115px]">Technician Type</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[110px]">Start Time</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[115px]">Complete Time</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[95px]">Status</th>
+                        <th className="px-3 py-3.5 text-center text-gray-100 font-bold min-w-[175px]">Progress</th>
+                        <th className="px-3 py-3.5 text-center text-gray-100 font-bold min-w-[105px]">Deadline</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[95px]">Fix It</th>
+                        <th className="px-3 py-3.5 text-center text-gray-100 font-bold min-w-[250px]">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
@@ -7834,47 +7834,51 @@ export default function App() {
                         .slice(0, taskLimit)
                         .map(task => (
                         <tr key={task.id} className="hover:bg-white/[0.04] transition-colors group">
-                          <td className="px-3 py-3 text-xs font-mono text-blue-400 font-bold whitespace-nowrap">{task.taskId}</td>
-                          <td className="px-3 py-3 min-w-[170px] max-w-[250px]">
-                            <p className="text-sm font-bold text-white group-hover:text-blue-400 transition-colors truncate" title={task.title}>{task.title}</p>
-                            <p className="text-[11px] text-gray-400 mt-0.5 truncate">
-                              <span className="text-gray-500">Assigned to: </span>
-                              {(() => {
-                                if (task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.length > 0) {
-                                  return (
-                                    <span className="text-blue-300 font-medium">
-                                      Team ({task.assignedTechnicians.length} techs): {task.assignedTechnicians.map(t => t.name || t.employeeId).join(', ')}
-                                    </span>
-                                  );
-                                }
-                                const assignee = staffList.find(s => s.id === task.assignedTo || s.name.toLowerCase() === (task.assignedTo || '').toLowerCase() || s.employeeId === task.assignedTo);
-                                if (assignee) {
-                                  return <span className="text-blue-300 font-medium">{assignee.name} ({assignee.employeeId})</span>;
-                                }
-                                return task.assignedTo || 'Unassigned';
-                              })()}
-                            </p>
+                          <td className="px-3 py-3 text-xs font-mono text-blue-400 font-bold text-center whitespace-nowrap">{task.taskId}</td>
+                          <td className="px-3 py-3 min-w-[200px] max-w-[260px] text-center align-middle whitespace-normal">
+                            <div className="w-full max-w-[240px] mx-auto space-y-1 whitespace-normal break-words">
+                              <p className="text-sm font-bold text-white group-hover:text-blue-400 transition-colors text-center leading-snug whitespace-normal break-words [overflow-wrap:anywhere]" title={task.title}>
+                                {task.title}
+                              </p>
+                              <p className="text-[11px] text-gray-400 text-center leading-snug whitespace-normal break-words [overflow-wrap:anywhere]">
+                                <span className="text-gray-500">Assigned to: </span>
+                                {(() => {
+                                  if (task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.length > 0) {
+                                    return (
+                                      <span className="text-blue-300 font-medium">
+                                        Team ({task.assignedTechnicians.length} techs): {task.assignedTechnicians.map(t => t.name || t.employeeId).join(', ')}
+                                      </span>
+                                    );
+                                  }
+                                  const assignee = staffList.find(s => s.id === task.assignedTo || s.name.toLowerCase() === (task.assignedTo || '').toLowerCase() || s.employeeId === task.assignedTo);
+                                  if (assignee) {
+                                    return <span className="text-blue-300 font-medium">{assignee.name} ({assignee.employeeId})</span>;
+                                  }
+                                  return task.assignedTo || 'Unassigned';
+                                })()}
+                              </p>
+                            </div>
                           </td>
-                          <td className="px-2.5 py-3 whitespace-nowrap">
+                          <td className="px-2.5 py-3 text-center whitespace-nowrap">
                             {(() => {
                               const officer = staffList.find(s => s.employeeId === task.assignedBy || s.id === task.assignedBy);
                               if (officer) {
-                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px]" title={officer.name}>{officer.name}</span>;
+                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px] mx-auto" title={officer.name}>{officer.name}</span>;
                               }
                               const creator = staffList.find(s => s.employeeId === task.createdBy || s.id === task.createdBy);
                               if (creator) {
-                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px]" title={creator.name}>{creator.name}</span>;
+                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px] mx-auto" title={creator.name}>{creator.name}</span>;
                               }
                               const assignee = staffList.find(s => s.id === task.assignedTo || s.name.toLowerCase() === (task.assignedTo || '').toLowerCase());
                               if (assignee?.role === 'TECHNICIAN') {
                                 const supervisor = staffList.find(s => s.id === assignee.supervisorId || s.employeeId === assignee.supervisorId);
-                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px]" title={supervisor?.name}>{supervisor?.name || 'N/A'}</span>;
+                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px] mx-auto" title={supervisor?.name}>{supervisor?.name || 'N/A'}</span>;
                               }
                               return <span className="text-xs text-gray-500">N/A</span>;
                             })()}
                           </td>
-                          <td className="px-2.5 py-3 text-xs font-semibold text-gray-200 whitespace-nowrap">{task.model}</td>
-                          <td className="px-2.5 py-3 whitespace-nowrap">
+                          <td className="px-2.5 py-3 text-xs font-semibold text-gray-200 text-center whitespace-nowrap">{task.model}</td>
+                          <td className="px-2.5 py-3 text-center whitespace-nowrap">
                             <span className={cn(
                               "text-[10px] font-bold px-2 py-0.5 rounded-full inline-block",
                               task.urgency === 'MOST_URGENT' ? "bg-red-500/20 text-red-400 border border-red-500/30" : 
@@ -7888,7 +7892,7 @@ export default function App() {
                               <span className="text-sm font-black text-blue-400">{task.points || 0}</span>
                             </td>
                           )}
-                          <td className="px-2.5 py-3 whitespace-nowrap">
+                          <td className="px-2.5 py-3 text-center whitespace-nowrap">
                             {getTaskTechnicianType(task) === 'Hired' ? (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/40">
                                 <Users size={11} className="text-purple-400" /> Hired
@@ -7899,14 +7903,14 @@ export default function App() {
                               </span>
                             )}
                           </td>
-                          <td className="px-2.5 py-3 whitespace-nowrap">
+                          <td className="px-2.5 py-3 text-center whitespace-nowrap">
                             {(() => {
                               const sTime = task.customStartTime || task.startedAt || task.createdAt;
                               if (!sTime) return <span className="text-gray-500 text-xs">-</span>;
                               const d = new Date(sTime);
                               if (isNaN(d.getTime())) return <span className="text-gray-300 text-xs">{sTime}</span>;
                               return (
-                                <div className="flex flex-col">
+                                <div className="flex flex-col items-center">
                                   <span className="text-xs font-semibold text-gray-200">
                                     {d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}
                                   </span>
@@ -7917,7 +7921,7 @@ export default function App() {
                               );
                             })()}
                           </td>
-                          <td className="px-2.5 py-3 whitespace-nowrap">
+                          <td className="px-2.5 py-3 text-center whitespace-nowrap">
                             {(() => {
                               const cTime = task.actualCompletionTime || task.completedAt;
                               if (!cTime) {
@@ -7934,7 +7938,7 @@ export default function App() {
                               const d = new Date(cTime);
                               if (isNaN(d.getTime())) return <span className="text-gray-300 text-xs">{cTime}</span>;
                               return (
-                                <div className="flex flex-col">
+                                <div className="flex flex-col items-center">
                                   <span className="text-xs font-semibold text-green-400">
                                     {d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}
                                   </span>
@@ -7945,7 +7949,7 @@ export default function App() {
                               );
                             })()}
                           </td>
-                          <td className="px-2.5 py-3 whitespace-nowrap">
+                          <td className="px-2.5 py-3 text-center whitespace-nowrap">
                             <span className={cn(
                               "text-[11px] px-2 py-0.5 rounded-full font-bold inline-block",
                               task.status === 'RUNNING' ? "bg-amber-500/20 text-amber-400 border border-amber-500/30" : 
@@ -7956,17 +7960,17 @@ export default function App() {
                               {task.status}
                             </span>
                             {task.status === 'HOLD' && task.remarks && (
-                              <p className="text-[10px] text-red-400 mt-0.5 italic max-w-[130px] truncate" title={task.remarks}>
+                              <p className="text-[10px] text-red-400 mt-0.5 italic max-w-[130px] mx-auto truncate" title={task.remarks}>
                                 Reason: {task.remarks}
                               </p>
                             )}
                           </td>
-                          <td className="px-2.5 py-3 whitespace-nowrap">
-                            <div className="w-[125px]">
+                          <td className="px-3 py-3 align-middle text-center min-w-[175px]">
+                            <div className="w-[160px] max-w-[160px] mx-auto overflow-hidden">
                               <CountdownTimer task={task} />
                             </div>
                           </td>
-                          <td className="px-2.5 py-3 whitespace-nowrap">
+                          <td className="px-3 py-3 text-center whitespace-nowrap min-w-[105px]">
                             <span className="text-xs font-bold text-red-400 uppercase tracking-tight">
                               {task.engineer_deadline ? new Date(task.engineer_deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : (task.deadline ? new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A')}
                             </span>
@@ -7997,8 +8001,8 @@ export default function App() {
                               <span className="text-gray-600 text-xs">-</span>
                             )}
                           </td>
-                          <td className="px-3 py-3 text-right whitespace-nowrap">
-                            <div className="flex items-center justify-end gap-1.5">
+                          <td className="px-3 py-3 text-center whitespace-nowrap min-w-[250px]">
+                            <div className="flex items-center justify-center gap-1.5">
                               {canUpdateTaskStatus(task, user) && (
                                 <button 
                                   onClick={() => {

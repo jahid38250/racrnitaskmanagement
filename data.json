@@ -4,7 +4,7 @@
       "id": "1774775754483iyriq",
       "employeeId": "jhfboss",
       "name": "JHF Boss",
-      "password": "$2b$10$F8nHFYJkQk.27XO0Ubzg7.rX2X2reOTq0Vs2jFxKY8b4iqeJT909O",
+      "password": "$2b$10$zwejTSejMefDax80rpVj8.Nkd6XaIcohiGYy7hJDZeT/7KVCa4Sb6",
       "role": "SUPER_ADMIN",
       "supervisorId": "",
       "assignedEngineers": [],
@@ -15163,6 +15163,468 @@
       "technicianId": "69963",
       "date": "2026-11-15",
       "id": "17947298598269zjnm"
+    },
+    {
+      "id": "1794805739734a5o7a",
+      "technicianId": "17668",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397345xypd",
+      "technicianId": "19219",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397352wqgs",
+      "technicianId": "29766",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739735gdtgm",
+      "technicianId": "35866",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739735cemyb",
+      "technicianId": "37091",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739735bnw1g",
+      "technicianId": "38056",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397360p0jr",
+      "technicianId": "39301",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739736s3feq",
+      "technicianId": "41527",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739736zs8p3",
+      "technicianId": "41053",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397360bdb9",
+      "technicianId": "43924",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739736faygv",
+      "technicianId": "45213",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397364u8u5",
+      "technicianId": "40760",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737ofyu1",
+      "technicianId": "39766",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737r10my",
+      "technicianId": "45064",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737eyhyc",
+      "technicianId": "54589",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397375b2s0",
+      "technicianId": "50177",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737fd833",
+      "technicianId": "41043",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737y9dg7",
+      "technicianId": "46419",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737iqmnq",
+      "technicianId": "53127",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737tr3ez",
+      "technicianId": "5101",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737nn686",
+      "technicianId": "57772",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739737capd5",
+      "technicianId": "66063",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738x89k8",
+      "technicianId": "68016",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738ygzw2",
+      "technicianId": "39823",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738hu36u",
+      "technicianId": "19359",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397389g0qz",
+      "technicianId": "19348",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738iezh9",
+      "technicianId": "42949",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397385mpsw",
+      "technicianId": "4461",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738in4tu",
+      "technicianId": "58175",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738mbhkp",
+      "technicianId": "38250",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738eqe9z",
+      "technicianId": "67123",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739738yue2k",
+      "technicianId": "41412",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739739ys5v7",
+      "technicianId": "39939",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739739ifont",
+      "technicianId": "7669",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397392o90k",
+      "technicianId": "6810",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739739t301a",
+      "technicianId": "21527",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739739uo8s3",
+      "technicianId": "30644",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397395j84u",
+      "technicianId": "22760",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739739y6wr2",
+      "technicianId": "20368",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739739nvukk",
+      "technicianId": "48309",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739739luq9x",
+      "technicianId": "48566",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397398q6w9",
+      "technicianId": "52903",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740sltel",
+      "technicianId": "37413",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740mug0n",
+      "technicianId": "40664",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397408445g",
+      "technicianId": "42234",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740wg07t",
+      "technicianId": "43081",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740bhh4i",
+      "technicianId": "44415",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397405c2za",
+      "technicianId": "56489",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740v0956",
+      "technicianId": "50328",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740wo7yq",
+      "technicianId": "40660",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740er46f",
+      "technicianId": "42692",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739740eg1yk",
+      "technicianId": "43264",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397413jaxw",
+      "technicianId": "57041",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741c0y02",
+      "technicianId": "41904",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397416myuz",
+      "technicianId": "43249",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741rapab",
+      "technicianId": "60321",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741kiy2x",
+      "technicianId": "57208",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741wy5is",
+      "technicianId": "60578",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741iqab8",
+      "technicianId": "60586",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741idd8q",
+      "technicianId": "60914",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741ljta5",
+      "technicianId": "61071",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739741avy86",
+      "technicianId": "61650",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742xpir3",
+      "technicianId": "61674",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742ordtd",
+      "technicianId": "62193",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742m489f",
+      "technicianId": "62536",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742okr4d",
+      "technicianId": "63089",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742efxxv",
+      "technicianId": "63107",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742swidy",
+      "technicianId": "63137",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742pde6c",
+      "technicianId": "63195",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742maou3",
+      "technicianId": "63513",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742u54er",
+      "technicianId": "63124",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739742q7pl8",
+      "technicianId": "1007",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739743sxln9",
+      "technicianId": "12467",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "17948057397430dez3",
+      "technicianId": "69646",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739743qt5f9",
+      "technicianId": "69695",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739743pv9xo",
+      "technicianId": "69810",
+      "status": "PRESENT",
+      "date": "2026-11-16"
+    },
+    {
+      "id": "1794805739743ple1y",
+      "technicianId": "69963",
+      "status": "PRESENT",
+      "date": "2026-11-16"
     }
   ],
   "notifications": [],
@@ -17697,6 +18159,22 @@
       "platform": "Unknown",
       "loginStatus": "SUCCESS",
       "createdAt": "2026-11-16T04:35:30.942Z"
+    },
+    {
+      "id": "17948050300723ctv2",
+      "userId": "1774775807698asgwa",
+      "employeeId": "38250",
+      "name": "Md. Jahid Hasan",
+      "role": "OFFICER",
+      "loginTime": "2026-11-16T05:08:59.530Z",
+      "ipAddress": "115.127.145.133",
+      "browser": "Chrome",
+      "os": "Windows",
+      "deviceType": "Desktop",
+      "deviceName": "Unknown Device",
+      "platform": "Windows",
+      "loginStatus": "SUCCESS",
+      "createdAt": "2026-11-16T05:08:59.530Z"
     }
   ],
   "adminAuditLogs": [
@@ -17961,9 +18439,34 @@
       "platform": "Unknown",
       "active": true,
       "lastActivity": "2026-11-16T04:35:31.427Z"
+    },
+    {
+      "id": "17948050300723ctv2",
+      "userId": "1774775807698asgwa",
+      "employeeId": "38250",
+      "loginTime": "2026-11-16T05:08:59.530Z",
+      "ipAddress": "115.127.145.133",
+      "browser": "Chrome",
+      "os": "Windows",
+      "deviceHash": "MTE1LjEyNy4xNDUuMTMzLU1vemlsbGEvNS4wIChXaW5kb3dzIE5UIDEwLjA7IFdpbjY0OyB4NjQpIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS8xNTcuMC4wLjAgU2FmYXJpLzUzNy4zNi1Vbmtub3duIERldmljZQ==",
+      "deviceName": "Unknown Device",
+      "platform": "Windows",
+      "active": true,
+      "lastActivity": "2026-11-16T05:08:59.747Z"
     }
   ],
-  "failedLoginAttempts": [],
+  "failedLoginAttempts": [
+    {
+      "id": "1794804946159",
+      "employeeId": "3624",
+      "ipAddress": "127.0.0.1",
+      "browser": "Unknown",
+      "os": "Unknown",
+      "timestamp": "2026-11-16T04:55:46.159Z",
+      "attemptCount": 1,
+      "isLocked": false
+    }
+  ],
   "lockedDevices": [],
   "shiftConfigurations": [
     {
@@ -18018,9 +18521,9 @@
   "autoBackupSettings": {
     "enabled": true,
     "intervalMinutes": 5,
-    "lastBackupTime": "2026-11-16T04:35:17.677Z",
-    "nextBackupTime": "2026-11-16T04:40:17.677Z",
+    "lastBackupTime": "2026-11-16T05:08:59.556Z",
+    "nextBackupTime": "2026-11-16T05:13:59.556Z",
     "retentionCount": 5000
   },
-  "lastSavedAt": "2026-11-16T04:35:31.429Z"
+  "lastSavedAt": "2026-11-16T05:09:56.554Z"
 }

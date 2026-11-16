@@ -28,13 +28,15 @@ import {
 interface MigrationArgs {
   source: 'auto' | 'firestore' | 'file';
   filePath: string;
+  firebaseConfigPath: string;
   dryRun: boolean;
 }
 
 function parseArgs(): MigrationArgs {
   const args = process.argv.slice(2);
-  let source: 'auto' | 'firestore' | 'file' = 'auto';
+  let source: 'auto' | 'firestore' | 'file' = 'file';
   let filePath = 'data/db.json';
+  let firebaseConfigPath = 'firebase-applet-config.json';
   let dryRun = false;
 
   for (const arg of args) {
@@ -43,11 +45,13 @@ function parseArgs(): MigrationArgs {
       if (val === 'firestore' || val === 'file' || val === 'auto') source = val;
     } else if (arg.startsWith('--file=')) {
       filePath = arg.slice('--file='.length);
+    } else if (arg.startsWith('--firebase-config=')) {
+      firebaseConfigPath = arg.slice('--firebase-config='.length);
     } else if (arg === '--dry-run') {
       dryRun = true;
     }
   }
-  return { source, filePath, dryRun };
+  return { source, filePath, firebaseConfigPath, dryRun };
 }
 
 function decodeFirestoreValue(val: any): any {
@@ -137,8 +141,8 @@ async function fetchFirestoreDocReadOnly(
   return decodeFirestoreDocument(json);
 }
 
-async function loadFromFirestoreReadOnly(): Promise<any | null> {
-  const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+async function loadFromFirestoreReadOnly(configPath: string): Promise<any | null> {
+  const cfgPath = path.isAbsolute(configPath) ? configPath : path.join(process.cwd(), configPath);
   if (!fsSync.existsSync(cfgPath)) return null;
 
   const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf-8'));
@@ -299,7 +303,7 @@ async function main() {
 
   if (args.source === 'firestore' || args.source === 'auto') {
     try {
-      firestoreData = await loadFromFirestoreReadOnly();
+      firestoreData = await loadFromFirestoreReadOnly(args.firebaseConfigPath);
       if (firestoreData) {
         console.log(`[MIGRATION] Firestore snapshot fetched (${firestoreData.users.length} users, ${firestoreData.tasks.length} tasks). Original Firestore data untouched.`);
       }

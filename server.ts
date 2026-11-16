@@ -278,7 +278,7 @@ async function startServer() {
             loadedContent = parsedDb;
             loadedFrom = DB_FILE;
           } else {
-            console.log(`[DATA MERGE] Merging cloud Firestore state (${(loadedContent.tasks || []).length} tasks, ${(loadedContent.users || []).length} users) with local disk state (${(parsedDb.tasks || []).length} tasks, ${(parsedDb.users || []).length} users)...`);
+            console.log(`[DATA MERGE] Merging primary MySQL state (${(loadedContent.tasks || []).length} tasks, ${(loadedContent.users || []).length} users) with local disk state (${(parsedDb.tasks || []).length} tasks, ${(parsedDb.users || []).length} users)...`);
             
             // Merge tasks by id
             const taskMap = new Map<string, any>();
@@ -1372,7 +1372,7 @@ async function startServer() {
           tasksCount: tasks.length,
           usersCount: users.length,
           details: { skipped: 'unchanged_dataset' },
-          sourceFolder: 'backups/ (Firestore & Local Disk)'
+          sourceFolder: 'backups/ (MySQL & Local Disk)'
         };
       }
 
@@ -3626,10 +3626,10 @@ async function startServer() {
     if (fsSync.existsSync(filePath)) {
       return res.download(filePath, filename);
     }
-    // Fallback to durable cloud storage in Firestore
+    // Fallback to durable MySQL backup snapshots table
     const cloudData = await getPersistentBackupData(filename);
     if (!cloudData) {
-      return res.status(404).json({ error: "Backup snapshot file not found on disk or cloud" });
+      return res.status(404).json({ error: "Backup snapshot file not found on disk or MySQL" });
     }
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/json');
@@ -6214,7 +6214,13 @@ Output JSON format:
     const task = tasks.find(t => t.id === taskId || t.taskId === taskId);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
-    const mins = Math.max(15, Math.min(720, Number(durationMinutes) || 120));
+    const rawMins = durationMinutes !== undefined && durationMinutes !== null && durationMinutes !== ''
+      ? Number(durationMinutes)
+      : 120;
+    if (![120, 180, 240].includes(rawMins)) {
+      return res.status(400).json({ error: "Overtime duration must be 2 hours (minimum), 3 hours, or 4 hours (highest)." });
+    }
+    const mins = rawMins;
     const trimmedReason = String(reason || '').trim();
     if (!trimmedReason) return res.status(400).json({ error: "Justification reason is required" });
 
@@ -6318,7 +6324,16 @@ Output JSON format:
     const ot = overtimeRequests.find(o => o.id === id);
     if (!ot) return res.status(404).json({ error: "Overtime request not found" });
 
-    const approvedMins = req.body.approvedDurationMinutes ? Math.max(15, Number(req.body.approvedDurationMinutes)) : ot.durationMinutes;
+    let approvedMins: number;
+    if (req.body.approvedDurationMinutes !== undefined && req.body.approvedDurationMinutes !== null && req.body.approvedDurationMinutes !== '') {
+      const parsedApproved = Number(req.body.approvedDurationMinutes);
+      if (![120, 180, 240].includes(parsedApproved)) {
+        return res.status(400).json({ error: "Approved overtime duration must be 2 hours (minimum), 3 hours, or 4 hours (highest)." });
+      }
+      approvedMins = parsedApproved;
+    } else {
+      approvedMins = Math.max(120, Math.min(240, Number(ot.durationMinutes) || 120));
+    }
     const startMs = parseDate(ot.startTime).getTime() || Date.now();
     const endMs = startMs + approvedMins * 60 * 1000;
 

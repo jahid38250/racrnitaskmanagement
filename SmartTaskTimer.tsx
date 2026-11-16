@@ -192,18 +192,21 @@ export const SmartTaskTimer: React.FC<SmartTaskTimerProps> = ({
 
   if (compact) {
     return (
-      <div className="space-y-1.5 w-full">
-        <div className="flex items-center justify-between gap-2 text-xs">
-          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold border ${badge.bg}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
-            {badge.text}
+      <div className="space-y-1.5 w-full min-w-0">
+        <div className="flex flex-col items-center gap-1 text-xs min-w-0">
+          <span
+            className={`inline-flex items-center justify-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold border max-w-full truncate ${badge.bg}`}
+            title={badge.text}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${badge.dot}`} />
+            <span className="truncate">{badge.text}</span>
           </span>
-          <span className="font-mono text-gray-300 text-[11px] font-semibold">
+          <span className="font-mono text-gray-300 text-[11px] font-semibold whitespace-nowrap">
             {workingTimeStr} / {estimatedTimeStr}
           </span>
         </div>
         <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
-          <motion.div 
+          <motion.div
             initial={{ width: 0 }}
             animate={{ width: `${Math.min(100, timing.progressPercent)}%` }}
             className={`h-full ${badge.color} transition-all duration-500`}
