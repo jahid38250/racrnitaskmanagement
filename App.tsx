@@ -1,0 +1,12366 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  LayoutDashboard, 
+  ClipboardList, 
+  Users, 
+  Settings, 
+  Bell, 
+  LogOut, 
+  Search, 
+  Plus, 
+  Filter,
+  ChevronRight,
+  ChevronDown,
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  BarChart3,
+  UserCircle,
+  Menu,
+  X,
+  Download,
+  Upload,
+  AirVent,
+  Eye,
+  EyeOff,
+  CheckCircle,
+  TrendingUp,
+  Database,
+  Award,
+  Activity,
+  Phone,
+  PhoneOff,
+  Edit2,
+  Trash2,
+  FileText,
+  FileSpreadsheet,
+  Calendar,
+  Info,
+  Wrench,
+  Share2,
+  Pause,
+  Play,
+  Lock,
+  Layers,
+  Zap,
+  Palette,
+  RefreshCw,
+  Star,
+  Shield,
+  Building2,
+  Smartphone,
+  Globe,
+  Monitor,
+  Fingerprint,
+  History,
+  UserCheck,
+  UserMinus,
+  AlertTriangle,
+  ExternalLink,
+  HardDrive,
+  Save,
+  FileDown,
+  Check,
+  RotateCcw,
+  FolderDown,
+  UserPlus,
+  PlusCircle
+} from 'lucide-react';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer, 
+  LineChart, 
+  Line, 
+  Legend,
+  Cell,
+  PieChart,
+  Pie
+} from 'recharts';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import * as XLSX from 'xlsx';
+import { cn } from './utils';
+import { Role, Urgency, User, Task, Attendance, TaskLog, TaskStatus, PointTransaction, TechnicianPerformance, ShiftConfiguration, TechnicianShiftAssignment, OvertimeRequest } from './types';
+import { toast, Toaster } from 'sonner';
+import { ExecutiveCommandCenter } from './ExecutiveCommandCenter';
+import { SmartTaskTimer, TaskTimerContext } from './SmartTaskTimer';
+import { ShiftManagementModal } from './ShiftManagementModal';
+import { OvertimeModal } from './OvertimeModal';
+import { TimeExtensionModal } from './TimeExtensionModal';
+import { TeamPerformanceDashboard } from './TeamPerformanceDashboard';
+import { DEFAULT_SHIFTS } from './workingTimeEngine';
+
+// --- Context ---
+const ThemeContext = React.createContext('dark');
+
+// --- Components ---
+
+export const parseTaskDurationMinutes = (dur?: string): number => {
+  if (!dur) return 60;
+  const str = String(dur).trim();
+  if (/^\d+$/.test(str)) return parseInt(str, 10) || 60;
+  let mins = 0;
+  const dMatch = str.match(/(\d+)\s*d/i);
+  const hMatch = str.match(/(\d+)\s*h/i);
+  const mMatch = str.match(/(\d+)\s*m/i);
+  if (dMatch) mins += parseInt(dMatch[1], 10) * 24 * 60;
+  if (hMatch) mins += parseInt(hMatch[1], 10) * 60;
+  if (mMatch) mins += parseInt(mMatch[1], 10);
+  if (mins === 0) {
+    const numMatch = str.match(/(\d+)/);
+    if (numMatch) mins = parseInt(numMatch[1], 10);
+  }
+  return mins || 60;
+};
+
+export const getTaskHoldDurationMs = (task: any, refEndTime?: Date): number => {
+  let holdMs = Number(task.totalHoldMs) || ((Number(task.totalHoldMinutes) || 0) * 60 * 1000);
+
+  if (task.status === 'HOLD') {
+    let holdStartMs = 0;
+    if (task.currentHoldStartTime) {
+      const parsed = new Date(task.currentHoldStartTime).getTime();
+      if (!isNaN(parsed)) holdStartMs = parsed;
+    }
+    if (!holdStartMs && Array.isArray(task.holdHistory) && task.holdHistory.length > 0) {
+      const last = task.holdHistory[task.holdHistory.length - 1];
+      if (last?.holdStart) {
+        const parsed = new Date(last.holdStart).getTime();
+        if (!isNaN(parsed)) holdStartMs = parsed;
+      }
+    }
+    if (!holdStartMs && Array.isArray(task.logs)) {
+      const holdLog = [...task.logs].reverse().find((l: any) => 
+        (l.action && String(l.action).toLowerCase().includes('hold'))
+      );
+      if (holdLog?.timestamp) {
+        const parsed = new Date(holdLog.timestamp).getTime();
+        if (!isNaN(parsed)) holdStartMs = parsed;
+      }
+    }
+    if (!holdStartMs) {
+      const parsed = new Date(task.startedAt || task.createdAt || Date.now()).getTime();
+      if (!isNaN(parsed)) holdStartMs = parsed;
+    }
+
+    const refMs = refEndTime ? refEndTime.getTime() : Date.now();
+    const ongoingHoldMs = Math.max(0, refMs - holdStartMs);
+    holdMs += ongoingHoldMs;
+  }
+
+  return holdMs;
+};
+
+export const getTaskActiveElapsedMs = (task: any, refEndTime?: Date): number => {
+  const startRaw = task.customStartTime || task.startedAt || task.createdAt;
+  const start = new Date(startRaw).getTime();
+  if (isNaN(start)) return 0;
+
+  const priorHoldMs = Number(task.totalHoldMs) || ((Number(task.totalHoldMinutes) || 0) * 60 * 1000);
+
+  // If task is ON HOLD: The active work clock is completely FROZEN at the moment hold started!
+  if (task.status === 'HOLD') {
+    let holdStartMs = 0;
+    if (task.currentHoldStartTime) {
+      const parsed = new Date(task.currentHoldStartTime).getTime();
+      if (!isNaN(parsed)) holdStartMs = parsed;
+    }
+    if (!holdStartMs && Array.isArray(task.holdHistory) && task.holdHistory.length > 0) {
+      const last = task.holdHistory[task.holdHistory.length - 1];
+      if (last?.holdStart) {
+        const parsed = new Date(last.holdStart).getTime();
+        if (!isNaN(parsed)) holdStartMs = parsed;
+      }
+    }
+    if (!holdStartMs && Array.isArray(task.logs)) {
+      const holdLog = [...task.logs].reverse().find((l: any) => 
+        (l.action && String(l.action).toLowerCase().includes('hold'))
+      );
+      if (holdLog?.timestamp) {
+        const parsed = new Date(holdLog.timestamp).getTime();
+        if (!isNaN(parsed)) holdStartMs = parsed;
+      }
+    }
+    if (!holdStartMs) {
+      holdStartMs = start;
+    }
+
+    // Freeze active work at exactly (holdStartMs - start) - priorHoldMs!
+    // Never increases while task is in HOLD!
+    return Math.max(0, (holdStartMs - start) - priorHoldMs);
+  }
+
+  // If task is COMPLETED:
+  if (task.status === 'COMPLETED') {
+    const endRaw = task.actualCompletionTime || task.completedAt || refEndTime || Date.now();
+    const end = new Date(endRaw).getTime();
+    if (!isNaN(end)) {
+      const totalHoldMs = getTaskHoldDurationMs(task, new Date(end));
+      return Math.max(0, (end - start) - totalHoldMs);
+    }
+  }
+
+  // If task is RUNNING:
+  const nowMs = refEndTime ? refEndTime.getTime() : Date.now();
+  return Math.max(0, (nowMs - start) - priorHoldMs);
+};
+
+const CountdownTimer = ({ task }: { task: Task }) => {
+  return <SmartTaskTimer task={task} compact />;
+};
+
+const GlassCard = ({ children, className, delay = 0 }: { children: React.ReactNode, className?: string, delay?: number }) => {
+  const theme = React.useContext(ThemeContext);
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay }}
+      className={cn(
+        theme === 'light' 
+          ? "bg-white/80 backdrop-blur-md border border-slate-200 rounded-2xl p-6 shadow-xl shadow-slate-200/50"
+          : "bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-6 shadow-xl",
+        className
+      )}
+    >
+      {children}
+    </motion.div>
+  );
+};
+
+const SidebarItem = ({ 
+  icon: Icon, 
+  label, 
+  active, 
+  onClick, 
+  color = "text-blue-500",
+  count = 0
+}: { 
+  icon: any, 
+  label: string, 
+  active?: boolean, 
+  onClick: () => void,
+  color?: string,
+  count?: number
+}) => {
+  const theme = React.useContext(ThemeContext);
+  
+  return (
+    <motion.button
+      whileHover={{ scale: 1.05, x: 5 }}
+      whileTap={{ scale: 0.95 }}
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-all duration-300 relative group",
+        active 
+          ? theme === 'light'
+            ? "bg-blue-50 text-blue-600 border-l-4 border-blue-600 shadow-sm"
+            : "bg-blue-600/10 text-blue-400 border-l-4 border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.1)]"
+          : theme === 'light'
+            ? "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            : "text-gray-400 hover:bg-white/5 hover:text-white"
+      )}
+    >
+      <Icon 
+        size={20} 
+        className={cn(
+          "transition-colors duration-300",
+          active ? color : "text-gray-400 group-hover:" + color
+        )} 
+      />
+      <span className="font-semibold text-sm tracking-wide flex-1 text-left">{label}</span>
+      
+      {count > 0 && (
+        <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-red-500/20">
+          {count}
+        </span>
+      )}
+
+      {active && (
+        <motion.div
+          layoutId="activeNav"
+          className="absolute inset-0 bg-blue-500/5 rounded-xl -z-10"
+          initial={false}
+          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+        />
+      )}
+    </motion.button>
+  );
+};
+
+const StatCard = ({ label, value, icon: Icon, color, trend }: { label: string, value: string | number, icon: any, color: string, trend?: string }) => (
+  <GlassCard className="flex items-center justify-between">
+    <div>
+      <p className="text-gray-400 text-sm font-medium uppercase tracking-wider">{label}</p>
+      <h3 className="text-3xl font-bold mt-1 text-white">{value}</h3>
+      {trend && <p className="text-xs text-green-400 mt-2 font-medium">{trend}</p>}
+    </div>
+    <div className={cn("p-4 rounded-2xl", color)}>
+      <Icon size={24} className="text-white" />
+    </div>
+  </GlassCard>
+);
+
+const ReportingPanel = ({ tasks, staff, user }: { tasks: Task[], staff: User[], user: User | null }) => {
+  const canViewPoints = Boolean(user && ['HOD', 'DHOD', 'DCBO', 'CBO', 'SUPER_ADMIN'].includes(user.role));
+  const [reportType, setReportType] = useState<'DAILY' | 'WEEKLY' | 'MONTHLY' | 'CUSTOM'>('DAILY');
+  const [startDate, setStartDate] = useState(new Date(new Date().setHours(0,0,0,0)).toISOString().slice(0, 16));
+  const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 16));
+  const [selectedEngineer, setSelectedEngineer] = useState<string>('ALL');
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  useEffect(() => {
+    if (user?.role === 'ENGINEER') {
+      setSelectedEngineer(user.employeeId);
+    }
+  }, [user]);
+
+  // Helper to find the engineer responsible for a staff member
+  const getResponsibleEngineerId = (s: User | undefined) => {
+    if (!s) return null;
+    if (s.role === 'ENGINEER') return s.employeeId;
+    if (s.role === 'OFFICER') {
+      const eng = staff.find(e => e.id === s.supervisorId && e.role === 'ENGINEER');
+      return eng?.employeeId || null;
+    }
+    if (s.role === 'TECHNICIAN') {
+      const supervisor = staff.find(sup => sup.id === s.supervisorId);
+      if (supervisor?.role === 'OFFICER') {
+        const eng = staff.find(e => e.id === supervisor.supervisorId && e.role === 'ENGINEER');
+        return eng?.employeeId || null;
+      }
+      if (supervisor?.role === 'ENGINEER') {
+        return supervisor.employeeId;
+      }
+    }
+    return null;
+  };
+
+  const calculateDuration = (start?: string, end?: string, taskItem?: Task) => {
+    if (taskItem) {
+      const activeMs = getTaskActiveElapsedMs(taskItem, end ? new Date(end) : undefined);
+      const totalMins = Math.floor(activeMs / (1000 * 60));
+      const hours = Math.floor(totalMins / 60);
+      const minutes = totalMins % 60;
+      return `${hours}h ${minutes}m`;
+    }
+    if (!start || !end) return 'N/A';
+    const s = new Date(start);
+    const e = new Date(end);
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) return 'N/A';
+    const diff = Math.max(0, e.getTime() - s.getTime());
+    const totalMins = Math.floor(diff / (1000 * 60));
+    const hours = Math.floor(totalMins / 60);
+    const minutes = totalMins % 60;
+    return `${hours}h ${minutes}m`;
+  };
+
+  const getReportData = (filteredTasks: Task[]) => {
+    const role = user?.role;
+    let headers: string[] = ['ID', 'Title', 'Model'];
+    if (canViewPoints) {
+      headers.push('Points');
+    }
+    
+    if (role === 'ENGINEER') {
+      headers.push('Concern', 'Status', 'Deadline', 'Completed At', 'Time Taken', 'History');
+    } else if (role === 'OFFICER') {
+      headers.push('Assigned Engineer', 'Assigned Technician', 'Status', 'Deadline', 'Completed At', 'Time Taken', 'History');
+    } else {
+      // Super Admin / HOD / In-Charge / Model Manager
+      headers.push('Engineer', 'Concern', 'Technician', 'Status', 'Deadline', 'Completed At', 'Time Taken', 'History');
+    }
+
+    const rows = filteredTasks.map(t => {
+      const row: any[] = [t.taskId, t.title, t.model];
+      if (canViewPoints) {
+        row.push(t.points || 0);
+      }
+      
+      const creator = staff.find(s => s.employeeId === t.createdBy || s.id === t.createdBy);
+      const assigner = staff.find(s => s.employeeId === t.assignedBy || s.id === t.assignedBy);
+      const assignee = staff.find(s => s.id === t.assignedTo || s.employeeId === t.assignedTo || (s.name && t.assignedTo && s.name.toLowerCase().trim() === t.assignedTo.toLowerCase().trim()));
+
+      // Logic to find the specific Engineer, Officer, Technician for this task
+      const resolveTaskEngineer = (task: Task): User | undefined => {
+        if (creator?.role === 'ENGINEER') return creator;
+        if (assigner?.role === 'ENGINEER') return assigner;
+        if (assignee?.role === 'ENGINEER') return assignee;
+        if (task.approvedBy) {
+          const appEng = staff.find(s => (s.employeeId === task.approvedBy || s.id === task.approvedBy) && s.role === 'ENGINEER');
+          if (appEng) return appEng;
+        }
+        if (task.recommendedBy) {
+          const recEng = staff.find(s => (s.employeeId === task.recommendedBy || s.id === task.recommendedBy) && s.role === 'ENGINEER');
+          if (recEng) return recEng;
+        }
+        if (task.concernEngineerId) {
+          const concEng = staff.find(s => (s.employeeId === task.concernEngineerId || s.id === task.concernEngineerId) && s.role === 'ENGINEER');
+          if (concEng) return concEng;
+        }
+        return undefined;
+      };
+      
+      const engineer = resolveTaskEngineer(t);
+      const engineerName = engineer?.name || 'N/A';
+      
+      const findOfficer = (s: User | undefined) => {
+        if (!s) return null;
+        if (s.role === 'OFFICER') return s;
+        if (s.role === 'TECHNICIAN') return staff.find(o => o.id === s.supervisorId && o.role === 'OFFICER');
+        return null;
+      };
+      
+      const officer = findOfficer(creator) || findOfficer(assigner) || findOfficer(assignee);
+      const officerName = officer?.name || 'N/A';
+      
+      const technician = [creator, assigner, assignee].find(s => s?.role === 'TECHNICIAN');
+      const technicianName = technician?.name || 'N/A';
+
+      const history = (t.logs || []).map(l => `[${new Date(l.timestamp).toLocaleString()}] ${l.action} by ${l.user}`).join('\n');
+
+      const formattedDeadline = new Date(t.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const startRef = t.customStartTime || t.startedAt || t.createdAt;
+      const endRef = t.actualCompletionTime || t.completedAt;
+      const takenStr = t.taskTakenTime || calculateDuration(startRef, endRef, t);
+      if (role === 'ENGINEER') {
+        row.push(officerName, t.status, formattedDeadline, endRef ? new Date(endRef).toLocaleString() : 'N/A', takenStr, history);
+      } else if (role === 'OFFICER') {
+        row.push(engineerName, technicianName, t.status, formattedDeadline, endRef ? new Date(endRef).toLocaleString() : 'N/A', takenStr, history);
+      } else {
+        row.push(engineerName, officerName, technicianName, t.status, formattedDeadline, endRef ? new Date(endRef).toLocaleString() : 'N/A', takenStr, history);
+      }
+      return row;
+    });
+
+    return { headers, rows };
+  };
+
+  const getFilteredTasks = () => {
+    const now = new Date();
+    let start = new Date();
+    let end = new Date();
+    
+    if (reportType === 'DAILY') {
+      start.setHours(0, 0, 0, 0);
+    } else if (reportType === 'WEEKLY') {
+      start.setDate(now.getDate() - 7);
+    } else if (reportType === 'MONTHLY') {
+      start.setMonth(now.getMonth() - 1);
+    } else if (reportType === 'CUSTOM') {
+      start = new Date(startDate);
+      end = new Date(endDate);
+    }
+
+    return tasks.filter(t => {
+      const taskDate = new Date(t.createdAt);
+      
+      // Date filtering
+      let dateMatch = false;
+      if (reportType === 'CUSTOM') {
+        dateMatch = taskDate >= start && taskDate <= end;
+      } else {
+        dateMatch = taskDate >= start;
+      }
+      if (!dateMatch) return false;
+
+      // Engineer filtering (if a specific engineer is selected)
+      if (selectedEngineer !== 'ALL') {
+        const creator = staff.find(s => s.employeeId === t.createdBy || s.id === t.createdBy);
+        const assigner = staff.find(s => s.employeeId === t.assignedBy || s.id === t.assignedBy);
+        const assignee = staff.find(s => s.id === t.assignedTo || s.employeeId === t.assignedTo || (s.name && t.assignedTo && s.name.toLowerCase().trim() === t.assignedTo.toLowerCase().trim()));
+
+        let taskEngId: string | null = null;
+        if (creator?.role === 'ENGINEER') taskEngId = creator.employeeId;
+        else if (assigner?.role === 'ENGINEER') taskEngId = assigner.employeeId;
+        else if (assignee?.role === 'ENGINEER') taskEngId = assignee.employeeId;
+        else if (t.approvedBy) {
+          const appEng = staff.find(s => (s.employeeId === t.approvedBy || s.id === t.approvedBy) && s.role === 'ENGINEER');
+          if (appEng) taskEngId = appEng.employeeId;
+        } else if (t.recommendedBy) {
+          const recEng = staff.find(s => (s.employeeId === t.recommendedBy || s.id === t.recommendedBy) && s.role === 'ENGINEER');
+          if (recEng) taskEngId = recEng.employeeId;
+        } else if (t.concernEngineerId) {
+          const concEng = staff.find(s => (s.employeeId === t.concernEngineerId || s.id === t.concernEngineerId) && s.role === 'ENGINEER');
+          if (concEng) taskEngId = concEng.employeeId;
+        }
+
+        return taskEngId === selectedEngineer;
+      }
+
+      return true;
+    });
+  };
+
+  const scopedEngineers = staff.filter(s => {
+    if (s.role !== 'ENGINEER') return false;
+    if (user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD') return true;
+    if (user?.role === 'ENGINEER' && s.employeeId === user.employeeId) return true;
+    if (user?.assignedEngineers && user.assignedEngineers.length > 0) {
+      return user.assignedEngineers.includes(s.employeeId);
+    }
+    return false;
+  });
+
+  const generatePDF = () => {
+    const doc = new jsPDF({ orientation: 'landscape' });
+    const filteredTasks = getFilteredTasks();
+    const { headers, rows } = getReportData(filteredTasks);
+    
+    doc.setFontSize(20);
+    doc.text(`Task Report - ${reportType}`, 14, 22);
+    doc.setFontSize(11);
+    doc.setTextColor(100);
+    doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 30);
+    doc.text(`Generated by: ${user?.name} (${user?.role})`, 14, 38);
+    if (selectedEngineer !== 'ALL') {
+      const eng = staff.find(s => s.employeeId === selectedEngineer);
+      doc.text(`Engineer: ${eng?.name || 'Unknown'} (${selectedEngineer})`, 14, 46);
+    }
+    if (reportType === 'CUSTOM') {
+      doc.text(`Range: ${startDate} to ${endDate}`, 14, selectedEngineer !== 'ALL' ? 54 : 46);
+    }
+
+    autoTable(doc, {
+      startY: reportType === 'CUSTOM' || selectedEngineer !== 'ALL' ? 60 : 45,
+      head: [headers],
+      body: rows,
+      didDrawPage: (data) => {
+        const pageSize = doc.internal.pageSize;
+        const pageHeight = pageSize.height ? pageSize.height : pageSize.getHeight();
+        doc.setFontSize(8);
+        doc.setTextColor(150);
+        doc.text(
+          "Software development by Jahid Hasan (38250) RAC R&I",
+          pageSize.width / 2,
+          pageHeight - 10,
+          { align: 'center' }
+        );
+      }
+    });
+
+    doc.save(`Task_Report_${reportType}_${new Date().toISOString().split('T')[0]}.pdf`);
+  };
+
+  const generateExcel = () => {
+    const filteredTasks = getFilteredTasks();
+    const { headers, rows } = getReportData(filteredTasks);
+    
+    // Convert rows to objects for Excel
+    const data = rows.map(row => {
+      const obj: any = {};
+      headers.forEach((header, index) => {
+        obj[header] = row[index];
+      });
+      return obj;
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    
+    // Add footer row
+    const footerRow = [['Software development by Jahid Hasan (38250) RAC R&I']];
+    XLSX.utils.sheet_add_aoa(ws, footerRow, { origin: -1 });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Tasks");
+    XLSX.writeFile(wb, `Task_Report_${reportType}_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
+  const filtered = getFilteredTasks();
+  const stats = {
+    total: filtered.length,
+    completed: filtered.filter(t => t.status === 'COMPLETED').length,
+    running: filtered.filter(t => t.status === 'RUNNING').length,
+    pending: filtered.filter(t => t.status === 'PENDING').length,
+    points: filtered.filter(t => t.status === 'COMPLETED' && t.requestStatus === 'APPROVED').reduce((sum, t) => sum + (Number(t.points) || 0), 0),
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-col lg:flex-row items-center justify-between gap-6">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex bg-white/5 p-1 rounded-2xl border border-white/10">
+            {(['DAILY', 'WEEKLY', 'MONTHLY', 'CUSTOM'] as const).map((type) => (
+              <button
+                key={type}
+                onClick={() => setReportType(type)}
+                className={cn(
+                  "px-6 py-2 rounded-xl text-sm font-bold transition-all",
+                  reportType === type ? "bg-blue-600 text-white shadow-lg" : "text-gray-400 hover:text-white"
+                )}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 bg-white/5 p-2 rounded-2xl border border-white/10">
+            <Users size={16} className="text-gray-400 ml-2" />
+            <select 
+              value={selectedEngineer}
+              onChange={(e) => setSelectedEngineer(e.target.value)}
+              className="bg-transparent text-xs font-bold text-white focus:outline-none min-w-[150px]"
+            >
+              <option value="ALL" className="bg-[#0f0f12]">All Assigned Engineers</option>
+              {scopedEngineers.map(eng => (
+                <option key={eng.id} value={eng.employeeId} className="bg-[#0f0f12]">
+                  {eng.name} ({eng.employeeId})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {reportType === 'CUSTOM' && (
+            <div className="flex items-center gap-2 bg-white/5 p-2 rounded-2xl border border-white/10">
+              <input 
+                type="datetime-local" 
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-transparent text-xs font-bold text-white focus:outline-none"
+              />
+              <span className="text-gray-500 text-xs">to</span>
+              <input 
+                type="datetime-local" 
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="bg-transparent text-xs font-bold text-white focus:outline-none"
+              />
+            </div>
+          )}
+        </div>
+        
+        <div className="flex gap-4">
+          <button 
+            onClick={generatePDF}
+            className="flex items-center gap-2 px-6 py-3 bg-red-500/20 hover:bg-red-500/30 text-red-500 rounded-xl font-bold border border-red-500/20 transition-all"
+          >
+            <FileText size={20} />
+            Export PDF
+          </button>
+          <button 
+            onClick={generateExcel}
+            className="flex items-center gap-2 px-6 py-3 bg-green-500/20 hover:bg-green-500/30 text-green-500 rounded-xl font-bold border border-green-500/20 transition-all"
+          >
+            <FileSpreadsheet size={20} />
+            Export Excel
+          </button>
+        </div>
+      </div>
+
+      <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-6", canViewPoints ? "lg:grid-cols-5" : "lg:grid-cols-4")}>
+        <div className="bg-white/5 p-6 rounded-2xl border border-white/10">
+          <p className="text-gray-400 text-xs uppercase tracking-widest font-bold">Total Tasks</p>
+          <h4 className="text-3xl font-bold mt-2">{stats.total}</h4>
+        </div>
+        <div className="bg-green-500/10 p-6 rounded-2xl border border-green-500/20">
+          <p className="text-green-500 text-xs uppercase tracking-widest font-bold">Completed</p>
+          <h4 className="text-3xl font-bold mt-2 text-green-500">{stats.completed}</h4>
+        </div>
+        <div className="bg-amber-500/10 p-6 rounded-2xl border border-amber-500/20">
+          <p className="text-amber-500 text-xs uppercase tracking-widest font-bold">Running</p>
+          <h4 className="text-3xl font-bold mt-2 text-amber-500">{stats.running}</h4>
+        </div>
+        <div className="bg-blue-500/10 p-6 rounded-2xl border border-blue-500/20">
+          <p className="text-blue-500 text-xs uppercase tracking-widest font-bold">Pending</p>
+          <h4 className="text-3xl font-bold mt-2 text-blue-500">{stats.pending}</h4>
+        </div>
+        {canViewPoints && (
+          <div className="bg-purple-500/10 p-6 rounded-2xl border border-purple-500/20">
+            <p className="text-purple-500 text-xs uppercase tracking-widest font-bold">Total Points</p>
+            <h4 className="text-3xl font-bold mt-2 text-purple-500">{stats.points}</h4>
+          </div>
+        )}
+      </div>
+
+      <GlassCard>
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-bold">Report Preview</h3>
+          <span className="text-xs text-gray-500">Showing {filtered.length} tasks</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-white/10">
+                <th className="py-4 px-4 text-xs font-bold text-gray-400 uppercase tracking-wider">Task ID</th>
+                <th className="py-4 px-4 text-xs font-bold text-gray-400 uppercase tracking-wider">Title</th>
+                <th className="py-4 px-4 text-xs font-bold text-gray-400 uppercase tracking-wider">Assigned To</th>
+                <th className="py-4 px-4 text-xs font-bold text-gray-400 uppercase tracking-wider">Status</th>
+                <th className="py-4 px-4 text-xs font-bold text-gray-400 uppercase tracking-wider">Progress</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(t => (
+                <tr key={t.id} className="border-b border-white/5 hover:bg-white/5 transition-all">
+                  <td className="py-4 px-4 text-sm font-mono text-gray-400">{t.taskId}</td>
+                  <td className="py-4 px-4 text-sm font-bold">{t.title}</td>
+                  <td className="py-4 px-4 text-sm text-gray-400">
+                    {(() => {
+                      const assignee = staff.find(s => s.id === t.assignedTo || s.name.toLowerCase().trim() === t.assignedTo.toLowerCase().trim());
+                      if (assignee?.role === 'TECHNICIAN') {
+                        const officer = staff.find(o => o.id === assignee.supervisorId);
+                        return officer?.name || 'Officer';
+                      }
+                      return assignee?.name || t.assignedTo;
+                    })()}
+                  </td>
+                  <td className="py-4 px-4">
+                    <span className={cn(
+                      "text-[10px] font-bold px-2 py-1 rounded-full uppercase",
+                      t.status === 'COMPLETED' ? "bg-green-500/20 text-green-500" :
+                      t.status === 'RUNNING' ? "bg-amber-500/20 text-amber-500" :
+                      "bg-blue-500/20 text-blue-500"
+                    )}>
+                      {t.status}
+                    </span>
+                  </td>
+                  <td className="py-4 px-4 text-sm font-bold">{t.progress}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </GlassCard>
+    </div>
+  );
+};
+
+// --- Main App ---
+
+const SecurityCenter = ({ 
+  activeTab, 
+  setActiveTab, 
+  activityLogs, 
+  activeSessions, 
+  suspiciousLogins, 
+  lockedDevices, 
+  lockedAccounts,
+  auditLogs,
+  onForceLogout,
+  onLockDevice,
+  onUnlockDevice,
+  onUnlockAccount
+}: { 
+  activeTab: string, 
+  setActiveTab: (tab: string) => void,
+  activityLogs: any[],
+  activeSessions: any[],
+  suspiciousLogins: any[],
+  lockedDevices: any[],
+  lockedAccounts: any[],
+  auditLogs: any[],
+  onForceLogout: (sessionId: string) => void,
+  onLockDevice: (data: any) => void,
+  onUnlockDevice: (id: string) => void,
+  onUnlockAccount: (employeeId: string) => void
+}) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
+
+  const filteredLogs = activityLogs.filter(log => {
+    const matchesSearch = log.employeeId.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                         log.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         log.ipAddress.includes(searchTerm);
+    const matchesDate = (!dateRange.start || new Date(log.loginTime) >= new Date(dateRange.start)) &&
+                       (!dateRange.end || new Date(log.loginTime) <= new Date(dateRange.end));
+    return matchesSearch && matchesDate;
+  }).sort((a, b) => new Date(b.loginTime).getTime() - new Date(a.loginTime).getTime());
+
+  const exportToExcel = () => {
+    const ws = XLSX.utils.json_to_sheet(filteredLogs);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Activity Logs");
+    XLSX.writeFile(wb, `Activity_Logs_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
+  return (
+    <div className="space-y-8">
+      {/* Security Tabs */}
+      <div className="flex flex-wrap gap-4 bg-white/5 p-1 rounded-2xl border border-white/10 w-fit">
+        {[
+          { id: 'activity_logs', label: 'Activity Logs', icon: History },
+          { id: 'active_sessions', label: 'Active Sessions', icon: Monitor },
+          { id: 'suspicious_logins', label: 'Suspicious Logins', icon: AlertTriangle, count: suspiciousLogins.length },
+          { id: 'locked_accounts', label: 'Locked Accounts', icon: UserMinus, count: lockedAccounts.length },
+          { id: 'locked_devices', label: 'Locked Devices', icon: Lock, count: lockedDevices.length },
+          { id: 'audit_trail', label: 'Audit Trail', icon: ClipboardList }
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={cn(
+              "flex items-center gap-2 px-6 py-3 rounded-xl transition-all font-semibold text-sm",
+              activeTab === tab.id 
+                ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20" 
+                : "text-gray-400 hover:text-white hover:bg-white/5"
+            )}
+          >
+            <tab.icon size={18} />
+            {tab.label}
+            {tab.count !== undefined && tab.count > 0 && (
+              <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full ml-1">
+                {tab.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Activity Logs */}
+      {activeTab === 'activity_logs' && (
+        <GlassCard className="space-y-6">
+          <div className="flex flex-col md:flex-row justify-between gap-4">
+            <div className="flex flex-wrap gap-4 items-center">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+                <input 
+                  type="text" 
+                  placeholder="Search logs..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 w-64"
+                />
+              </div>
+              <input 
+                type="date" 
+                value={dateRange.start}
+                onChange={(e) => setDateRange({...dateRange, start: e.target.value})}
+                className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm focus:outline-none"
+              />
+              <span className="text-gray-500">to</span>
+              <input 
+                type="date" 
+                value={dateRange.end}
+                onChange={(e) => setDateRange({...dateRange, end: e.target.value})}
+                className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm focus:outline-none"
+              />
+            </div>
+            <button 
+              onClick={exportToExcel}
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-xl font-bold transition-all"
+            >
+              <Download size={18} />
+              Export Excel
+            </button>
+          </div>
+
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-white/5 text-gray-400 text-xs uppercase tracking-wider">
+                  <th className="px-4 py-4 font-semibold">Employee</th>
+                  <th className="px-4 py-4 font-semibold">Role</th>
+                  <th className="px-4 py-4 font-semibold">IP / Device</th>
+                  <th className="px-4 py-4 font-semibold">Login Time</th>
+                  <th className="px-4 py-4 font-semibold">Logout Time</th>
+                  <th className="px-4 py-4 font-semibold">Duration</th>
+                  <th className="px-4 py-4 font-semibold">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {filteredLogs.map(log => (
+                  <tr key={log.id} className="hover:bg-white/5 transition-colors group">
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center text-blue-400 font-bold text-xs">
+                          {log.name[0]}
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold">{log.name}</p>
+                          <p className="text-[10px] text-gray-500">{log.employeeId}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4">
+                      <span className="text-[10px] bg-white/5 px-2 py-1 rounded-full text-gray-400 font-mono">
+                        {log.role}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-2">
+                        <Globe size={14} className="text-gray-500" />
+                        <div className="flex flex-col">
+                          <span className="text-xs font-mono">{log.ipAddress}</span>
+                          {log.localIp && log.localIp !== 'Unknown' && (
+                            <span className="text-[10px] text-gray-500 font-mono">Local: {log.localIp}</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <Monitor size={14} className="text-gray-500" />
+                        <span className="text-[10px] text-gray-500">{(log as any).deviceName || log.browser} on {(log as any).platform || log.os}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-xs">
+                      {new Date(log.loginTime).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-4 text-xs">
+                      {log.logoutTime ? new Date(log.logoutTime).toLocaleString() : '-'}
+                    </td>
+                    <td className="px-4 py-4 text-xs font-mono text-blue-400">
+                      {log.sessionDuration || '-'}
+                    </td>
+                    <td className="px-4 py-4">
+                      <span className={cn(
+                        "text-[10px] px-2 py-1 rounded-full font-bold",
+                        log.loginStatus === 'SUCCESS' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                      )}>
+                        {log.loginStatus}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Active Sessions */}
+      {activeTab === 'active_sessions' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {activeSessions.map(session => (
+            <GlassCard key={session.id} className="relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-4">
+                <span className="flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+              </div>
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center text-white font-bold text-lg shadow-lg">
+                  {session.employeeId[0]}
+                </div>
+                <div>
+                  <h4 className="font-bold text-lg">{session.employeeId}</h4>
+                  <p className="text-xs text-gray-500">Active Session</p>
+                </div>
+              </div>
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">IP Address</span>
+                  <div className="text-right">
+                    <p className="font-mono">{session.ipAddress}</p>
+                    {session.localIp && session.localIp !== 'Unknown' && (
+                      <p className="text-[10px] text-gray-500 font-mono">Local: {session.localIp}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Device / Browser</span>
+                  <span>{(session as any).deviceName || session.browser}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Platform / OS</span>
+                  <span>{(session as any).platform || session.os}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Login Time</span>
+                  <span className="text-xs">{new Date(session.loginTime).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Last Activity</span>
+                  <span className="text-xs">{new Date(session.lastActivity).toLocaleString()}</span>
+                </div>
+              </div>
+              <div className="mt-6 pt-6 border-t border-white/5 flex gap-3">
+                <button 
+                  onClick={() => onForceLogout(session.id)}
+                  className="flex-1 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white py-2 rounded-xl text-xs font-bold transition-all border border-red-500/20"
+                >
+                  Force Logout
+                </button>
+                <button 
+                  onClick={() => onLockDevice({ ipAddress: session.ipAddress, deviceHash: session.deviceHash, reason: 'Admin forced lock' })}
+                  className="flex-1 bg-gray-500/10 hover:bg-gray-500 text-gray-400 hover:text-white py-2 rounded-xl text-xs font-bold transition-all border border-gray-500/20"
+                >
+                  Lock Device
+                </button>
+              </div>
+            </GlassCard>
+          ))}
+          {activeSessions.length === 0 && (
+            <div className="col-span-full py-20 text-center">
+              <Monitor size={48} className="mx-auto text-gray-700 mb-4" />
+              <p className="text-gray-500">No active sessions found</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Suspicious Logins */}
+      {activeTab === 'suspicious_logins' && (
+        <div className="space-y-6">
+          {suspiciousLogins.map((s) => (
+            <GlassCard key={s.userId} className="border-l-4 border-red-500">
+              <div className="flex items-start justify-between">
+                <div className="flex gap-4">
+                  <div className="p-3 bg-red-500/20 rounded-2xl text-red-400">
+                    <AlertTriangle size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-lg text-red-400">{s.reason}</h4>
+                    <p className="text-sm text-gray-400 mt-1">
+                      User: <span className="text-white font-bold">{s.name} ({s.employeeId})</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2 mt-4">
+                      {s.ips.map((ip: string) => (
+                        <span key={ip} className="bg-white/5 border border-white/10 px-3 py-1 rounded-full text-xs font-mono">
+                          {ip}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => onForceLogout(s.logs[0].id)}
+                  className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-bold text-sm transition-all"
+                >
+                  Force Logout All
+                </button>
+              </div>
+              <div className="mt-6 overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-gray-500 uppercase tracking-wider border-b border-white/5">
+                      <th className="py-2">Time</th>
+                      <th className="py-2">IP</th>
+                      <th className="py-2">Browser</th>
+                      <th className="py-2">OS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {s.logs.map((log: any) => (
+                      <tr key={log.id} className="border-b border-white/5 last:border-0">
+                        <td className="py-3">{new Date(log.loginTime).toLocaleString()}</td>
+                        <td className="py-3 font-mono">{log.ipAddress}</td>
+                        <td className="py-3">{log.browser}</td>
+                        <td className="py-3">{log.os}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </GlassCard>
+          ))}
+          {suspiciousLogins.length === 0 && (
+            <div className="py-20 text-center">
+              <CheckCircle2 size={48} className="mx-auto text-green-900 mb-4" />
+              <p className="text-gray-500">No suspicious activities detected</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Locked Accounts */}
+      {activeTab === 'locked_accounts' && (
+        <GlassCard>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-white/5 text-gray-400 text-xs uppercase tracking-wider">
+                  <th className="px-4 py-4 font-semibold">Employee ID</th>
+                  <th className="px-4 py-4 font-semibold">Last Attempt IP</th>
+                  <th className="px-4 py-4 font-semibold">Attempts</th>
+                  <th className="px-4 py-4 font-semibold">Locked Until</th>
+                  <th className="px-4 py-4 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {lockedAccounts.map(account => (
+                  <tr key={account.id} className="hover:bg-white/5 transition-colors">
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-red-500/20 rounded-lg text-red-400">
+                          <UserMinus size={16} />
+                        </div>
+                        <span className="text-sm font-bold">{account.employeeId}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-xs font-mono">{account.ipAddress}</td>
+                    <td className="px-4 py-4 text-sm">{account.attemptCount}</td>
+                    <td className="px-4 py-4 text-xs">
+                      {account.lockUntil ? new Date(account.lockUntil).toLocaleString() : 'Permanent'}
+                    </td>
+                    <td className="px-4 py-4 text-right">
+                      <button 
+                        onClick={() => onUnlockAccount(account.employeeId)}
+                        className="text-blue-400 hover:text-blue-300 text-xs font-bold"
+                      >
+                        Unlock Account
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {lockedAccounts.length === 0 && (
+            <div className="py-20 text-center">
+              <UserCheck size={48} className="mx-auto text-gray-700 mb-4" />
+              <p className="text-gray-500">No accounts are currently locked</p>
+            </div>
+          )}
+        </GlassCard>
+      )}
+
+      {/* Locked Devices */}
+      {activeTab === 'locked_devices' && (
+        <GlassCard>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-white/5 text-gray-400 text-xs uppercase tracking-wider">
+                  <th className="px-4 py-4 font-semibold">Device / IP</th>
+                  <th className="px-4 py-4 font-semibold">Reason</th>
+                  <th className="px-4 py-4 font-semibold">Locked By</th>
+                  <th className="px-4 py-4 font-semibold">Locked At</th>
+                  <th className="px-4 py-4 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {lockedDevices.map(device => (
+                  <tr key={device.id} className="hover:bg-white/5 transition-colors">
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-red-500/20 rounded-lg text-red-400">
+                          <Lock size={16} />
+                        </div>
+                        <div>
+                          <p className="text-sm font-mono">{device.ipAddress || 'Device Hash'}</p>
+                          {device.deviceHash && <p className="text-[10px] text-gray-500 truncate w-32">{device.deviceHash}</p>}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-sm">{device.reason}</td>
+                    <td className="px-4 py-4 text-sm">{device.lockedBy}</td>
+                    <td className="px-4 py-4 text-xs">{new Date(device.lockedAt).toLocaleString()}</td>
+                    <td className="px-4 py-4 text-right">
+                      <button 
+                        onClick={() => onUnlockDevice(device.id)}
+                        className="text-blue-400 hover:text-blue-300 text-xs font-bold"
+                      >
+                        Unlock
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {lockedDevices.length === 0 && (
+            <div className="py-20 text-center">
+              <Lock size={48} className="mx-auto text-gray-700 mb-4" />
+              <p className="text-gray-500">No devices are currently locked</p>
+            </div>
+          )}
+        </GlassCard>
+      )}
+
+      {/* Audit Trail */}
+      {activeTab === 'audit_trail' && (
+        <GlassCard className="space-y-6">
+          <div className="flex justify-between items-center">
+            <h3 className="text-xl font-bold">System Audit Trail</h3>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+              <input 
+                type="text" 
+                placeholder="Search audit logs..." 
+                className="bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 w-64"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {auditLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map(log => (
+              <div key={log.id} className="bg-white/5 p-4 rounded-2xl border border-white/5 flex items-start gap-4 hover:bg-white/10 transition-all">
+                <div className={cn(
+                  "p-2 rounded-xl",
+                  log.actionType.includes('DELETE') ? "bg-red-500/20 text-red-400" :
+                  log.actionType.includes('CREATE') ? "bg-green-500/20 text-green-400" :
+                  "bg-blue-500/20 text-blue-400"
+                )}>
+                  <Fingerprint size={20} />
+                </div>
+                <div className="flex-1">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="font-bold text-sm">{log.details}</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Admin: <span className="text-gray-300">{log.adminName}</span> • IP: <span className="text-gray-300">{log.ipAddress}</span>
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-gray-500 font-mono">
+                      {new Date(log.timestamp).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded-full text-gray-400 uppercase tracking-widest font-bold">
+                      {log.actionType}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {auditLogs.length === 0 && (
+              <div className="py-20 text-center">
+                <ClipboardList size={48} className="mx-auto text-gray-700 mb-4" />
+                <p className="text-gray-500">No audit logs found</p>
+              </div>
+            )}
+          </div>
+        </GlassCard>
+      )}
+    </div>
+  );
+};
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [activeTab, setActiveTab] = useState('attendance');
+  const [performanceData, setPerformanceData] = useState<any[]>([]);
+  const [showDistributeModal, setShowDistributeModal] = useState<string | null>(null);
+  const [selectedTechnician, setSelectedTechnician] = useState('');
+  const [showQualityModal, setShowQualityModal] = useState<string | null>(null);
+  const [taskQuality, setTaskQuality] = useState(5);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [loginData, setLoginData] = useState({ employeeId: '', password: '' });
+  const [loginColors, setLoginColors] = useState({ id: '#3b82f6', pw: '#3b82f6' });
+
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
+  const canViewPoints = Boolean(user && ['HOD', 'DHOD', 'DCBO', 'CBO', 'SUPER_ADMIN'].includes(user.role));
+
+  const [isResetPasswordModalOpen, setIsResetPasswordModalOpen] = useState(false);
+  const [resetPasswordUser, setResetPasswordUser] = useState<User | null>(null);
+  const [passwordData, setPasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [resetPasswordData, setResetPasswordData] = useState({ newPassword: '', confirmPassword: '' });
+  const [isEditingPoints, setIsEditingPoints] = useState(false);
+  const [newPointValue, setNewPointValue] = useState(0);
+  const [isTaskDetailsModalOpen, setIsTaskDetailsModalOpen] = useState(false);
+  const [isStatusUpdateModalOpen, setIsStatusUpdateModalOpen] = useState(false);
+  const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
+  const [rejectTaskId, setRejectTaskId] = useState<string | null>(null);
+  const [rejectRemarks, setRejectRemarks] = useState('');
+
+  const [shifts, setShifts] = useState<ShiftConfiguration[]>(DEFAULT_SHIFTS);
+  const [shiftAssignments, setShiftAssignments] = useState<TechnicianShiftAssignment[]>([]);
+  const [overtimeRequests, setOvertimeRequests] = useState<OvertimeRequest[]>([]);
+  const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
+  const [selectedOvertimeTask, setSelectedOvertimeTask] = useState<Task | null>(null);
+  const [selectedExtensionTask, setSelectedExtensionTask] = useState<Task | null>(null);
+
+  // Track if any modal is open to prevent interruptions
+  const isAnyModalOpen = isTaskModalOpen || isStaffModalOpen || isTaskDetailsModalOpen || isStatusUpdateModalOpen || isChangePasswordModalOpen || isResetPasswordModalOpen || isRejectModalOpen || isShiftModalOpen || !!selectedOvertimeTask || !!selectedExtensionTask;
+
+  // Engineer Performance Analytics States
+  const [analyticsViewMode, setAnalyticsViewMode] = useState<'OFFICER' | 'ENGINEER'>('OFFICER');
+  const [engineerAnalyticsPeriod, setEngineerAnalyticsPeriod] = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('all');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [engineerAnalyticsData, setEngineerAnalyticsData] = useState<any>(null);
+  const [isLoadingEngineerAnalytics, setIsLoadingEngineerAnalytics] = useState(false);
+
+  const canViewEngineerAnalytics = Boolean(
+    user && ['ENGINEER', 'IN_CHARGE', 'MODEL_MANAGER', 'HOD', 'DHOD', 'CBO', 'DCBO', 'SUPER_ADMIN'].includes(user.role)
+  );
+
+  const canRecommendTask = Boolean(
+    user && ['IN_CHARGE', 'HOD', 'DHOD', 'SUPER_ADMIN', 'CBO', 'DCBO'].includes(user.role)
+  );
+
+  const [modalRecPoints, setModalRecPoints] = useState<number>(1);
+  const [modalRecDeadline, setModalRecDeadline] = useState<string>('');
+  const [modalRecConcernEngId, setModalRecConcernEngId] = useState<string>('');
+  const [isSubmittingRec, setIsSubmittingRec] = useState<boolean>(false);
+
+  const [hodDashboardView, setHodDashboardView] = useState<'command' | 'standard'>('command');
+  const [hodAttendanceCategory, setHodAttendanceCategory] = useState<'IN_CHARGE' | 'ALL_ASSOCIATE' | 'MODEL_MANAGER' | 'ENGINEER' | 'OFFICER'>('IN_CHARGE');
+  const isHodExecutiveUser = Boolean(
+    user && (
+      user.role === 'HOD' ||
+      user.role === 'DHOD' ||
+      user.employeeId === '19219' ||
+      user.employeeId === '17668'
+    )
+  );
+  const isExecutiveUser = Boolean(
+    user && (
+      user.role === 'CBO' ||
+      user.role === 'DCBO' ||
+      user.role === 'HOD' ||
+      user.role === 'DHOD' ||
+      user.role === 'SUPER_ADMIN' ||
+      user.employeeId === '19219' ||
+      user.employeeId === '17668'
+    )
+  );
+
+  const getRandomColor = () => {
+    const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+    return colors[Math.floor(Math.random() * colors.length)];
+  };
+
+  const handleIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLoginData({ ...loginData, employeeId: e.target.value });
+    setLoginColors({ ...loginColors, id: getRandomColor() });
+  };
+
+  const handlePwChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLoginData({ ...loginData, password: e.target.value });
+    setLoginColors({ ...loginColors, pw: getRandomColor() });
+  };
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [activityLogs, setActivityLogs] = useState<any[]>([]);
+  const [activeSessions, setActiveSessions] = useState<any[]>([]);
+  const [suspiciousLogins, setSuspiciousLogins] = useState<any[]>([]);
+  const [lockedDevices, setLockedDevices] = useState<any[]>([]);
+  const [lockedAccounts, setLockedAccounts] = useState<any[]>([]);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [staffList, setStaffList] = useState<User[]>([]);
+  const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [aiInsights, setAiInsights] = useState<{urgency?: string, reason?: string, delayPrediction?: any} | null>(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [distributeWorkType, setDistributeWorkType] = useState<'SINGLE' | 'TEAM'>('SINGLE');
+  const aiCache = useRef<Record<string, any>>({});
+
+  // Auto Logout System (5 MIN INACTIVE)
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    let timer: NodeJS.Timeout;
+
+    const resetTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        handleLogout();
+        toast.error("Session expired due to inactivity", {
+          duration: 5000,
+          position: 'top-center'
+        });
+      }, 5 * 60 * 1000); // 5 minutes
+    };
+
+    // Events to track activity
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    
+    const activityHandler = () => resetTimer();
+
+    events.forEach(event => {
+      document.addEventListener(event, activityHandler);
+    });
+
+    resetTimer(); // Initial call
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      events.forEach(event => {
+        document.removeEventListener(event, activityHandler);
+      });
+    };
+  }, [isLoggedIn]);
+
+  const handleAuthError = (res: Response) => {
+    if (res.status === 401) {
+      console.warn(`Unauthorized access. Clearing token and logging out.`);
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      setUser(null);
+      setIsLoggedIn(false);
+      return true;
+    }
+    return false;
+  };
+
+  // Helper for safe JSON fetching
+  const fetchJson = async (url: string, options: RequestInit = {}, retries = 6) => {
+    let lastErr: any = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(url, options);
+        
+        // Handle 204 No Content success
+        if (res.status === 204) {
+          return null;
+        }
+
+        // Handle 401 Unauthorized (Invalid or expired token)
+        // Skip automatic logout for the login endpoint itself, as 401 there means "Invalid credentials"
+        if (res.status === 401 && !url.includes('/api/auth/login')) {
+          let serverError = '';
+          try {
+            const errorData = await res.clone().json();
+            serverError = errorData.error || errorData.message || '';
+          } catch (e) {
+            // Ignore if not JSON
+          }
+          
+          if (handleAuthError(res)) {
+            throw new Error(serverError || 'Session expired or invalid. Please log in again.');
+          }
+        }
+
+        const contentType = res.headers.get('content-type');
+        
+        if (!contentType || !contentType.includes('application/json')) {
+          const text = await res.text();
+          const isWarmingUp =
+            res.status === 502 ||
+            res.status === 503 ||
+            res.status === 504 ||
+            text.includes('Starting Server') ||
+            text.includes('<!doctype html>') ||
+            text.includes('<!DOCTYPE html>') ||
+            text.includes('<html');
+
+          // If server is warming up or reverse proxy returning temporary interstitial HTML / 502/503/504
+          if (attempt < retries && isWarmingUp) {
+            await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+            continue;
+          }
+          console.warn(`Non-JSON response from ${url} (Status ${res.status}):`, text.slice(0, 200));
+          throw new Error(
+            text.includes('Starting Server')
+              ? 'Server is starting up. Please try again in a few seconds.'
+              : `Server is temporarily busy (Status: ${res.status}). Please try again.`
+          );
+        }
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || data.message || `Request failed with status ${res.status}`);
+        }
+        return data;
+      } catch (err: any) {
+        lastErr = err;
+        const errMsg = err?.message || String(err);
+        const isNetworkErr =
+          err instanceof TypeError ||
+          errMsg.toLowerCase().includes('failed to fetch') ||
+          errMsg.toLowerCase().includes('networkerror') ||
+          errMsg.toLowerCase().includes('load failed');
+        const isSafeToRetry = !options.method || options.method === 'GET';
+        if (attempt < retries && (isNetworkErr || isSafeToRetry)) {
+          await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+          continue;
+        }
+        if (!url.includes('/api/auth/login')) {
+          console.warn(`Fetch warning for ${url}:`, err);
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  };
+
+  // Helper functions for hierarchy
+  const getResponsibleEngineerId = (u: User | undefined): string | null => {
+    if (!u) return null;
+    if (u.role === 'ENGINEER') return u.employeeId;
+    
+    // Get live data for the user to ensure we have the latest assignedEngineers
+    const liveUser = staffList.find(s => s.id === u.id) || u;
+    
+    if (liveUser.role === 'OFFICER') {
+      // For Officers, the responsible engineer is the first one in their assignedEngineers list
+      const assignedEngs = liveUser.assignedEngineers || [];
+      return assignedEngs.length > 0 ? assignedEngs[0] : null;
+    }
+    
+    if (liveUser.role === 'TECHNICIAN') {
+      const supervisor = staffList.find(sup => sup.id === liveUser.supervisorId);
+      if (supervisor?.role === 'OFFICER') {
+        const assignedEngs = supervisor.assignedEngineers || [];
+        return assignedEngs.length > 0 ? assignedEngs[0] : null;
+      }
+      if (supervisor?.role === 'ENGINEER') {
+        return supervisor.employeeId;
+      }
+    }
+    return null;
+  };
+
+  const isStaffInScope = (staff: User): boolean => {
+    if (!user) return false;
+    
+    // Get current user's live data for real-time sync
+    const currentUserData = staffList.find(u => u.id === user.id) || user;
+    const myEmpId = currentUserData.employeeId;
+    
+    if (currentUserData.role === 'SUPER_ADMIN' || currentUserData.role === 'CBO' || currentUserData.role === 'DCBO' || currentUserData.role === 'HOD' || currentUserData.role === 'DHOD') return true;
+    
+    if (currentUserData.role === 'IN_CHARGE' || currentUserData.role === 'MODEL_MANAGER') {
+      const myAssignedEngs = currentUserData.assignedEngineers || [];
+      
+      // If it's an engineer, check if they are assigned to me
+      if (staff.role === 'ENGINEER') return myAssignedEngs.includes(staff.employeeId);
+      
+      // If it's an officer, check if any of their assigned engineers are assigned to me
+      if (staff.role === 'OFFICER') {
+        const officerEngs = staff.assignedEngineers || [];
+        return officerEngs.some(engId => myAssignedEngs.includes(engId));
+      }
+      
+      // If it's a technician, check their officer's assigned engineers
+      if (staff.role === 'TECHNICIAN') {
+        const officer = staffList.find(s => s.id === staff.supervisorId);
+        if (officer?.role === 'OFFICER') {
+          const officerEngs = officer.assignedEngineers || [];
+          return officerEngs.some(engId => myAssignedEngs.includes(engId));
+        }
+        if (officer?.role === 'ENGINEER') {
+          return myAssignedEngs.includes(officer.employeeId);
+        }
+      }
+      return false;
+    }
+    
+    if (currentUserData.role === 'OFFICER') {
+      // Officer can see their Technicians
+      if (staff.role === 'TECHNICIAN') {
+        return staff.supervisorId === currentUserData.id || (staff.supervisor_ids || []).includes(currentUserData.employeeId);
+      }
+      // Officer can see Engineers/Authorities assigned to them
+      const myAssignedEngs = currentUserData.assignedEngineers || [];
+      return myAssignedEngs.includes(staff.employeeId);
+    }
+    
+    if (currentUserData.role === 'ENGINEER') {
+      // Engineer can see Officers who have them in assignedEngineers
+      if (staff.role === 'OFFICER') {
+        return (staff.assignedEngineers || []).includes(myEmpId);
+      }
+      // Engineer can see Technicians whose Officer is assigned to them
+      if (staff.role === 'TECHNICIAN') {
+        const supervisor = staffList.find(s => s.id === staff.supervisorId);
+        return supervisor?.role === 'OFFICER' && (supervisor.assignedEngineers || []).includes(myEmpId);
+      }
+      return false;
+    }
+    
+    return staff.id === currentUserData.id;
+  };
+
+  const handleAdjustPoints = async (officerId: string, actionType: 'EDIT' | 'RESET', value?: number) => {
+    if (!window.confirm(`Are you sure you want to ${actionType === 'EDIT' ? 'update' : 'reset'} points for this officer?`)) return;
+
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetchJson('/api/admin/adjust-points', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          officerId,
+          newPoints: value,
+          actionType,
+          reason: actionType === 'EDIT' ? 'Manual Point Correction' : 'System Recalculation'
+        })
+      });
+
+      if (res.success) {
+        toast.success(`Points ${actionType === 'EDIT' ? 'updated' : 'reset'} successfully`);
+        setIsEditingPoints(false);
+        // Refresh data
+        const updatedUsers = await fetchJson('/api/users', { headers: { 'Authorization': `Bearer ${token}` } });
+        setStaffList(updatedUsers);
+        const updatedPoints = await fetchJson('/api/points', { headers: { 'Authorization': `Bearer ${token}` } });
+        setPointTransactions(updatedPoints);
+        
+        // Update viewingStaff if it's the same person
+        if (viewingStaff?.id === officerId) {
+          const updatedOfficer = updatedUsers.find((s: User) => s.id === officerId);
+          setViewingStaff(updatedOfficer);
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to adjust points');
+    }
+  };
+
+  const handleEditTaskPoint = async (taskId: string, currentPoints: number) => {
+    const newPoints = window.prompt(`Enter new point value for this task (0-3):`, currentPoints.toString());
+    if (newPoints === null) return;
+    
+    const pointsNum = parseInt(newPoints);
+    if (isNaN(pointsNum) || pointsNum < 0 || pointsNum > 3) {
+      toast.error('Invalid point value. Must be between 0 and 3.');
+      return;
+    }
+
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    // Optimistically update task points in state immediately
+    setTasks(prev => prev.map(t => (t.id === taskId || t.taskId === taskId) ? { ...t, points: pointsNum } : t));
+    toast.success('Task points updated successfully');
+
+    (async () => {
+      try {
+        const res = await fetchJson(`/api/admin/tasks/${taskId}/points`, {
+          method: 'PUT',
+          headers: { 
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ newPoints: pointsNum })
+        });
+
+        if (res.success) {
+          Promise.allSettled([
+            fetchPoints(token),
+            fetchStaff(token)
+          ]);
+        }
+      } catch (err: any) {
+        toast.error(err.message || 'Failed to sync task points');
+        fetchTasks(token, true);
+      }
+    })();
+  };
+
+  const getValidOfficerPoints = (officerId: string, targetMonthParam: boolean | string = false) => {
+    const officer = staffList.find(s => s.employeeId === officerId || s.id === officerId);
+    if (!officer) return 0;
+
+    const myEmpId = String(officer.employeeId || '').toLowerCase().trim();
+    const myId = String(officer.id || '').toLowerCase().trim();
+
+    let targetYear: number | null = null;
+    let targetMonth: number | null = null;
+
+    if (typeof targetMonthParam === 'string' && targetMonthParam !== 'ALL') {
+      const parts = targetMonthParam.split('-').map(Number);
+      targetYear = parts[0];
+      targetMonth = parts[1] - 1;
+    } else if (targetMonthParam === true) {
+      const now = new Date();
+      targetYear = now.getFullYear();
+      targetMonth = now.getMonth();
+    }
+
+    // If all-time total is requested (targetMonthParam === false or 'ALL')
+    if (targetYear === null && officer.total_point !== undefined) {
+      return Number(officer.total_point || 0);
+    }
+
+    // Authoritative task points calculation for the period
+    const taskPoints = tasks.filter(t => {
+      const status = (t.status || '').toUpperCase();
+      if (status !== 'COMPLETED') return false;
+
+      // Ownership check: must be created, assigned, or marked responsible for this officer
+      const createdByStr = String(t.createdBy || '').toLowerCase().trim();
+      const assignedByStr = String(t.assignedBy || '').toLowerCase().trim();
+      const respOffStr = String(t.responsibleOfficerId || '').toLowerCase().trim();
+      
+      const isMyTask = respOffStr === myEmpId || respOffStr === myId ||
+        createdByStr === myEmpId || createdByStr === myId ||
+        assignedByStr === myEmpId || assignedByStr === myId;
+      if (!isMyTask) return false;
+
+      // Strict point eligibility: Officer tasks MUST have engineerApproved = true
+      const creator = staffList.find(s => s.employeeId === t.createdBy || s.id === t.createdBy);
+      const isOfficerTask = creator?.role === 'OFFICER' || Boolean(t.responsibleOfficerId);
+      if (isOfficerTask && !t.engineerApproved) return false;
+      if (t.requestStatus === 'REJECTED') return false;
+
+      if (targetYear !== null && targetMonth !== null) {
+        const taskDate = new Date(t.completedAt || t.createdAt);
+        return taskDate.getMonth() === targetMonth && taskDate.getFullYear() === targetYear;
+      }
+      return true;
+    }).reduce((sum, t) => sum + (Number(t.points) || 1), 0);
+
+    // Include manual adjustments from pointTransactions
+    const manualPoints = pointTransactions.filter(pt => {
+      const ptOff = String(pt.officerId || '').toLowerCase().trim();
+      if ((ptOff !== myId && ptOff !== myEmpId) || pt.taskId !== 'MANUAL_ADJUSTMENT') return false;
+      if (targetYear !== null && targetMonth !== null) {
+        const ptDate = new Date(pt.completedAt);
+        return ptDate.getMonth() === targetMonth && ptDate.getFullYear() === targetYear;
+      }
+      return true;
+    }).reduce((sum, pt) => sum + (Number(pt.pointValue) || 0), 0);
+
+    const calculatedTotal = taskPoints + manualPoints;
+    if (targetYear !== null) return calculatedTotal;
+    return Number(officer.total_point !== undefined ? officer.total_point : calculatedTotal);
+  };
+
+  const getValidOfficerTaskCount = (officerId: string, targetMonthParam: boolean | string = false) => {
+    const officer = staffList.find(s => s.employeeId === officerId || s.id === officerId);
+    if (!officer) return 0;
+
+    const myEmpId = String(officer.employeeId || '').toLowerCase().trim();
+    const myId = String(officer.id || '').toLowerCase().trim();
+
+    let targetYear: number | null = null;
+    let targetMonth: number | null = null;
+
+    if (typeof targetMonthParam === 'string' && targetMonthParam !== 'ALL') {
+      const parts = targetMonthParam.split('-').map(Number);
+      targetYear = parts[0];
+      targetMonth = parts[1] - 1;
+    } else if (targetMonthParam === true) {
+      const now = new Date();
+      targetYear = now.getFullYear();
+      targetMonth = now.getMonth();
+    }
+
+    return tasks.filter(t => {
+      const status = (t.status || '').toUpperCase();
+      if (status !== 'COMPLETED') return false;
+
+      const createdByStr = String(t.createdBy || '').toLowerCase().trim();
+      const assignedByStr = String(t.assignedBy || '').toLowerCase().trim();
+      const respOffStr = String(t.responsibleOfficerId || '').toLowerCase().trim();
+
+      const isMyTask = respOffStr === myEmpId || respOffStr === myId ||
+        createdByStr === myEmpId || createdByStr === myId ||
+        assignedByStr === myEmpId || assignedByStr === myId;
+      if (!isMyTask) return false;
+
+      const creator = staffList.find(s => s.employeeId === t.createdBy || s.id === t.createdBy);
+      const isOfficerTask = creator?.role === 'OFFICER' || Boolean(t.responsibleOfficerId);
+      if (isOfficerTask && !t.engineerApproved) return false;
+      if (t.requestStatus === 'REJECTED') return false;
+
+      if (targetYear !== null && targetMonth !== null) {
+        const taskDate = new Date(t.completedAt || t.createdAt);
+        return taskDate.getMonth() === targetMonth && taskDate.getFullYear() === targetYear;
+      }
+      return true;
+    }).length;
+  };
+
+  const fetchNotifications = async (token: string) => {
+    try {
+      const data = await fetchJson('/api/notifications', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setNotifications(data);
+    } catch (err) {
+      console.error('Fetch notifications error:', err);
+    }
+  };
+
+  const markNotificationRead = async (id: string) => {
+    const token = localStorage.getItem('token');
+    try {
+      await fetchJson(`/api/notifications/${id}/read`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      fetchNotifications(token!);
+    } catch (err) {
+      console.error('Mark notification read error:', err);
+    }
+  };
+
+  const clearNotifications = async () => {
+    const token = localStorage.getItem('token');
+    try {
+      await fetchJson('/api/notifications', {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setNotifications([]);
+    } catch (err) {
+      console.error('Clear notifications error:', err);
+    }
+  };
+
+  // Real-time shift detection trigger
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(new Date());
+    }, 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const calculatePerformance = (staff: User) => {
+    if (staff.role === 'OFFICER') {
+      const totalPointsAllTime = getValidOfficerPoints(staff.id);
+      const totalPointsThisMonth = getValidOfficerPoints(staff.id, true);
+      
+      const myPoints = pointTransactions.filter(pt => pt.officerId === staff.id);
+      const monthlyPoints = myPoints.filter(pt => {
+        const ptDate = new Date(pt.completedAt);
+        return ptDate.getMonth() === now.getMonth() && ptDate.getFullYear() === now.getFullYear();
+      });
+      const totalCompletedThisMonth = monthlyPoints.length;
+      
+      // Task Performance (60 marks) - Max 60 marks
+      const taskScore = Math.min(60, totalPointsAllTime);
+      
+      // Attendance (10 marks)
+      const myAttendance = attendance.filter(a => a.technicianId === staff.employeeId);
+      const presentDays = myAttendance.filter(a => a.status === 'PRESENT').length;
+      const attendanceScore = myAttendance.length > 0 ? (presentDays / myAttendance.length) * 10 : 10;
+      
+      // Efficiency (30 marks) - Based on on-time completion of tasks they assigned
+      const myAssignedTasks = tasks.filter(t => t.assignedBy === staff.employeeId && t.status === 'COMPLETED');
+      const onTimeTasks = myAssignedTasks.filter(t => {
+        if (!t.completedAt || !t.deadline) return true;
+        return new Date(t.completedAt) <= new Date(t.deadline);
+      }).length;
+      const efficiencyScore = myAssignedTasks.length > 0 ? (onTimeTasks / myAssignedTasks.length) * 30 : 30;
+
+      return {
+        taskScore: Math.round(taskScore * 10) / 10,
+        attendanceScore: Math.round(attendanceScore * 10) / 10,
+        efficiencyScore: Math.round(efficiencyScore * 10) / 10,
+        total: Math.round((taskScore + attendanceScore + efficiencyScore) * 10) / 10,
+        totalPoints: totalPointsThisMonth,
+        totalCompleted: totalCompletedThisMonth
+      };
+    }
+
+    if (staff.role === 'TECHNICIAN') {
+      const myPerf = technicianPerformance.filter(tp => tp.technicianId === staff.employeeId);
+      const totalCompletedThisMonth = myPerf.filter(tp => {
+        const ptDate = new Date(tp.date);
+        return ptDate.getMonth() === now.getMonth() && ptDate.getFullYear() === now.getFullYear();
+      }).length;
+
+      if (myPerf.length === 0) return { taskScore: 0, attendanceScore: 10, efficiencyScore: 30, total: 40, totalCompleted: 0 };
+
+      const avgEfficiency = myPerf.reduce((acc, tp) => acc + (tp.efficiencyScore || 0), 0) / myPerf.length;
+      const avgSpeed = myPerf.reduce((acc, tp) => acc + (tp.completionSpeedScore || 0), 0) / myPerf.length;
+      
+      // Attendance (10 marks)
+      const myAttendance = attendance.filter(a => a.technicianId === staff.employeeId);
+      const presentDays = myAttendance.filter(a => a.status === 'PRESENT').length;
+      const attendanceScore = myAttendance.length > 0 ? (presentDays / myAttendance.length) * 10 : 10;
+
+      return {
+        taskScore: Math.round(avgSpeed * 10) / 10,
+        attendanceScore: Math.round(attendanceScore * 10) / 10,
+        efficiencyScore: Math.round(avgEfficiency * 10) / 10,
+        total: Math.round((avgSpeed + attendanceScore + avgEfficiency) * 10) / 10,
+        totalCompleted: totalCompletedThisMonth
+      };
+    }
+
+    if (staff.role === 'ENGINEER') {
+      const myEmpId = staff.employeeId;
+      const myId = staff.id;
+      const myName = (staff.name || '').toLowerCase().trim();
+
+      const myEngTasks = tasks.filter(t => {
+        const isCreatedByMe = t.createdBy === myEmpId || t.createdBy === myId;
+        const isAssignedByMe = t.assignedBy === myEmpId || t.assignedBy === myId;
+        const isAssignedToMe = (t.assignedTo || '').toLowerCase().trim() === myName || t.assignedTo === myEmpId || t.assignedTo === myId;
+        const isApprovedByMe = t.approvedBy === myEmpId || t.approvedBy === myId || t.recommendedBy === myEmpId || t.concernEngineerId === myEmpId;
+        return isCreatedByMe || isAssignedByMe || isAssignedToMe || isApprovedByMe;
+      });
+
+      const completedEngTasks = myEngTasks.filter(t => t.status === 'COMPLETED');
+      const totalPointsAllTime = completedEngTasks.reduce((sum, t) => sum + (Number(t.points) || 1), 0);
+      const completedThisMonth = completedEngTasks.filter(t => {
+        const d = new Date(t.completedAt || t.createdAt);
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      });
+      const totalPointsThisMonth = completedThisMonth.reduce((sum, t) => sum + (Number(t.points) || 1), 0);
+
+      const taskScore = Math.min(60, totalPointsAllTime);
+
+      const myAttendance = attendance.filter(a => a.technicianId === staff.employeeId);
+      const presentDays = myAttendance.filter(a => a.status === 'PRESENT').length;
+      const attendanceScore = myAttendance.length > 0 ? (presentDays / myAttendance.length) * 10 : 10;
+
+      const onTimeTasks = completedEngTasks.filter(t => {
+        if (!t.completedAt || !t.deadline) return true;
+        return new Date(t.completedAt) <= new Date(t.deadline);
+      }).length;
+      const efficiencyScore = completedEngTasks.length > 0 ? (onTimeTasks / completedEngTasks.length) * 30 : 30;
+
+      return {
+        taskScore: Math.round(taskScore * 10) / 10,
+        attendanceScore: Math.round(attendanceScore * 10) / 10,
+        efficiencyScore: Math.round(efficiencyScore * 10) / 10,
+        total: Math.round((taskScore + attendanceScore + efficiencyScore) * 10) / 10,
+        totalPoints: totalPointsThisMonth,
+        totalCompleted: completedThisMonth.length
+      };
+    }
+
+    // Default for other roles
+    return { taskScore: 0, attendanceScore: 10, efficiencyScore: 30, total: 40 };
+  };
+
+  const formatMonthYearLabel = (monthKey: string) => {
+    if (!monthKey || monthKey === 'ALL') return 'All Time / All Months';
+    const [yearStr, monthStr] = monthKey.split('-');
+    const y = Number(yearStr);
+    const m = Number(monthStr);
+    if (!y || !m) return monthKey;
+    const d = new Date(y, m - 1, 1);
+    return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  };
+
+  const getRealtimeCurrentDate = () => {
+    const now = new Date();
+    // Support user timezone and UTC
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    const d = now.getDate();
+    const uy = now.getUTCFullYear();
+    const um = now.getUTCMonth() + 1;
+    const ud = now.getUTCDate();
+
+    const localKey = `${y}-${String(m).padStart(2, '0')}`;
+    const utcKey = `${uy}-${String(um).padStart(2, '0')}`;
+    // If local or UTC rolled over to November, realtime running month is the current calendar month
+    const realMonthKey = localKey >= utcKey ? localKey : utcKey;
+
+    const localDateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const utcDateStr = `${uy}-${String(um).padStart(2, '0')}-${String(ud).padStart(2, '0')}`;
+    const realDateStr = localDateStr >= utcDateStr ? localDateStr : utcDateStr;
+
+    const calcLastDay = (monthKey: string = realMonthKey) => {
+      const [yr, mn] = monthKey.split('-').map(Number);
+      const lastDay = new Date(yr, mn, 0).getDate();
+      return `${monthKey}-${String(lastDay).padStart(2, '0')}`;
+    };
+
+    return {
+      monthKey: realMonthKey,
+      todayStr: realDateStr,
+      firstDayOfMonth: `${realMonthKey}-01`,
+      lastDayOfMonth: calcLastDay
+    };
+  };
+
+  const getRunningMonthKey = () => {
+    return getRealtimeCurrentDate().monthKey;
+  };
+
+  const runningMonthKey = useMemo(() => getRunningMonthKey(), []);
+
+  // Provide all 12 calendar months (January to December) for the current year
+  const availableMonths = useMemo(() => {
+    const activeYear = runningMonthKey ? Number(runningMonthKey.split('-')[0]) : 2026;
+    const monthsList: string[] = [];
+    for (let m = 1; m <= 12; m++) {
+      monthsList.push(`${activeYear}-${String(m).padStart(2, '0')}`);
+    }
+    // Also include any other year months if tasks exist from other years
+    tasks.forEach(t => {
+      const m1 = (t.createdAt || '').slice(0, 7);
+      const m2 = (t.deadline || '').slice(0, 7);
+      const m3 = (t.completedAt || '').slice(0, 7);
+      [m1, m2, m3].forEach(k => {
+        if (/^\d{4}-\d{2}$/.test(k) && !monthsList.includes(k)) {
+          monthsList.push(k);
+        }
+      });
+    });
+    return monthsList;
+  }, [tasks, runningMonthKey]);
+
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [isFilterModelOpen, setIsFilterModelOpen] = useState(false);
+  const [globalFilters, setGlobalFilters] = useState(() => {
+    const info = getRealtimeCurrentDate();
+    return {
+      search: '',
+      startDate: info.firstDayOfMonth,
+      endDate: info.lastDayOfMonth(info.monthKey),
+      selectedMonth: info.monthKey,
+      model: 'ALL',
+      workType: 'ALL',
+      assignedUser: 'ALL'
+    };
+  });
+  const [analyticsMonth, setAnalyticsMonth] = useState<string>(() => getRealtimeCurrentDate().monthKey);
+
+  const hasInitializedMonth = useRef(false);
+  useEffect(() => {
+    if (!hasInitializedMonth.current) {
+      hasInitializedMonth.current = true;
+      const info = getRealtimeCurrentDate();
+      setGlobalFilters(prev => ({
+        ...prev,
+        selectedMonth: info.monthKey,
+        startDate: info.firstDayOfMonth,
+        endDate: info.lastDayOfMonth(info.monthKey)
+      }));
+      setAnalyticsMonth(info.monthKey);
+    }
+  }, []);
+
+  const filteredTasks = useMemo(() => {
+    if (!user) return [];
+    
+    let baseTasks = tasks;
+    
+    // User filter / scoping:
+    // If 'ALL' is chosen: show all tasks (Task Dashboard global view)
+    // If 'MY_SCOPE' is chosen or non-admin without 'ALL': scope to user's domain
+    if (globalFilters.assignedUser === 'MY_SCOPE') {
+      const currentUserData = staffList.find(u => u.id === user.id) || user;
+      const myName = currentUserData.name.toLowerCase();
+      const myEmpId = currentUserData.employeeId;
+      const myAssignedEngs = currentUserData.assignedEngineers || [];
+
+      baseTasks = tasks.filter(t => {
+        if (currentUserData.role === 'MODEL_MANAGER') {
+          const model = t.model;
+          let isModelMatch = false;
+          if (model === 'General Work') {
+            isModelMatch = myEmpId === '41053';
+          } else if (myEmpId === '38056') {
+            isModelMatch = ['12K', '9K', 'Portable'].includes(model);
+          } else if (myEmpId === '37091') {
+            isModelMatch = ['18K'].includes(model);
+          } else if (myEmpId === '41053') {
+            isModelMatch = ['24K', '30K', '36K'].includes(model);
+          }
+          
+          const creator = staffList.find(s => s.employeeId === t.createdBy);
+          const assigner = staffList.find(s => s.employeeId === t.assignedBy);
+          const assignee = staffList.find(s => s.id === t.assignedTo || s.name.toLowerCase().trim() === t.assignedTo.toLowerCase().trim());
+
+          const creatorEngId = getResponsibleEngineerId(creator);
+          const assignerEngId = getResponsibleEngineerId(assigner);
+          const assigneeEngId = getResponsibleEngineerId(assignee);
+
+          const isCreatorInScope = creatorEngId && myAssignedEngs.includes(creatorEngId);
+          const isAssignerInScope = assignerEngId && myAssignedEngs.includes(assignerEngId);
+          const isAssigneeInScope = assigneeEngId && myAssignedEngs.includes(assigneeEngId);
+          const isCreatedByMe = t.createdBy === myEmpId;
+          const isAssignedByMe = t.assignedBy === myEmpId;
+
+          return isCreatorInScope || isAssignerInScope || isAssigneeInScope || isCreatedByMe || isAssignedByMe || isModelMatch;
+        }
+
+        if (currentUserData.role === 'IN_CHARGE') {
+          const creator = staffList.find(s => s.employeeId === t.createdBy);
+          const assigner = staffList.find(s => s.employeeId === t.assignedBy);
+          const assignee = staffList.find(s => s.id === t.assignedTo || s.name.toLowerCase().trim() === t.assignedTo.toLowerCase().trim());
+          
+          const creatorEngId = getResponsibleEngineerId(creator);
+          const assignerEngId = getResponsibleEngineerId(assigner);
+          const assigneeEngId = getResponsibleEngineerId(assignee);
+          
+          const isCreatorInScope = creatorEngId && myAssignedEngs.includes(creatorEngId);
+          const isAssignerInScope = assignerEngId && myAssignedEngs.includes(assignerEngId);
+          const isAssigneeInScope = assigneeEngId && myAssignedEngs.includes(assigneeEngId);
+          
+          const isCreatedByMe = t.createdBy === myEmpId;
+          const isAssignedByMe = t.assignedBy === myEmpId;
+          
+          return isCreatorInScope || isAssignerInScope || isAssigneeInScope || isCreatedByMe || isAssignedByMe;
+        }
+
+        const assignedTo = (t.assignedTo || '').toLowerCase();
+        const isAssignedToMe = assignedTo === myName || t.assignedTo === currentUserData.id || t.assignedTo === currentUserData.employeeId;
+        const isCreatedByMe = t.createdBy === myEmpId || t.createdBy === currentUserData.id;
+        const isAssignedByMe = t.assignedBy === myEmpId || t.assignedBy === currentUserData.id;
+        const isApprovedByMe = t.approvedBy === myEmpId || t.recommendedBy === myEmpId || t.concernEngineerId === myEmpId;
+
+        if (currentUserData.role === 'ENGINEER') {
+          // If an Engineer is logged in, only include tasks they created, assigned, approved, or pending recommendation from their officers
+          if (isAssignedToMe || isCreatedByMe || isAssignedByMe || isApprovedByMe) return true;
+          const creator = staffList.find(s => s.employeeId === t.createdBy || s.id === t.createdBy);
+          if (t.requestStatus === 'RECOMMENDED' && creator?.role === 'OFFICER' && (creator.assignedEngineers || []).includes(myEmpId)) {
+            return true;
+          }
+          return false;
+        }
+        
+        const subordinates = staffList.filter(s => s.supervisorId === currentUserData.id || s.supervisorId === currentUserData.employeeId).map(s => (s.name || '').toLowerCase());
+        const isAssignedToSubordinate = subordinates.includes(assignedTo);
+        
+        const isTeamAssignedToSubordinate = t.workType === 'TEAM' && Array.isArray(t.assignedTechnicians) && t.assignedTechnicians.some((at: any) => {
+          const tech = staffList.find(s => s.employeeId === at.employeeId || (s.name || '').toLowerCase() === (at.name || '').toLowerCase() || s.id === at.id);
+          return tech && (tech.supervisorId === currentUserData.id || tech.supervisorId === currentUserData.employeeId);
+        });
+
+        const assignee = staffList.find(s => s.id === t.assignedTo || (s.name || '').toLowerCase() === assignedTo);
+        const isAssignedToMappedUser = assignee?.assignedEngineers?.includes(myEmpId);
+        const isMappedToMe = assignee && myAssignedEngs.includes(assignee.employeeId);
+        
+        return isAssignedToMe || isAssignedToSubordinate || isTeamAssignedToSubordinate || isCreatedByMe || isAssignedByMe || isAssignedToMappedUser || isMappedToMe;
+      });
+    } else if (globalFilters.assignedUser && globalFilters.assignedUser !== 'ALL') {
+      const targetEmp = globalFilters.assignedUser.toLowerCase();
+      const targetUser = staffList.find(s => (s.employeeId || '').toLowerCase() === targetEmp || s.id === globalFilters.assignedUser || (s.name || '').toLowerCase() === targetEmp);
+      const targetName = (targetUser?.name || '').toLowerCase();
+      const targetId = targetUser?.id || globalFilters.assignedUser;
+      const targetEmpId = (targetUser?.employeeId || '').toLowerCase();
+
+      baseTasks = tasks.filter(t => {
+        const assignedStr = (t.assignedTo || '').toLowerCase();
+        const createdStr = (t.createdBy || '').toLowerCase();
+        const assignerStr = (t.assignedBy || '').toLowerCase();
+
+        const matchesDirect = assignedStr === targetEmp || assignedStr === targetName || assignedStr === targetEmpId || t.assignedTo === targetId ||
+                              createdStr === targetEmp || createdStr === targetName || createdStr === targetEmpId || t.createdBy === targetId ||
+                              assignerStr === targetEmp || assignerStr === targetName || assignerStr === targetEmpId || t.assignedBy === targetId;
+
+        const matchesTeam = t.workType === 'TEAM' && Array.isArray(t.assignedTechnicians) && t.assignedTechnicians.some((at: any) => {
+          const atEmp = (at.employeeId || '').toLowerCase();
+          const atName = (at.name || '').toLowerCase();
+          return atEmp === targetEmp || atEmp === targetEmpId || atName === targetName || at.id === targetId;
+        });
+
+        return matchesDirect || matchesTeam;
+      });
+    }
+
+    // Apply Global Filters
+    return baseTasks.filter(t => {
+      const matchesSearch = !globalFilters.search || 
+        (t.title || '').toLowerCase().includes(globalFilters.search.toLowerCase()) ||
+        (t.details || '').toLowerCase().includes(globalFilters.search.toLowerCase()) ||
+        (t.taskId || '').toLowerCase().includes(globalFilters.search.toLowerCase()) ||
+        (t.model || '').toLowerCase().includes(globalFilters.search.toLowerCase());
+      
+      const matchesModel = globalFilters.model === 'ALL' || t.model === globalFilters.model;
+      
+      const matchesWorkType = globalFilters.workType === 'ALL' || t.workType === globalFilters.workType;
+      
+      // Date range filter: using YYYY-MM-DD string comparisons immune to timezone shifts
+      const tDeadlineStr = (t.deadline || '').slice(0, 10);
+      const tCreatedStr = (t.createdAt || '').slice(0, 10);
+      const tCompletedStr = (t.completedAt || '').slice(0, 10);
+      const tPrimaryDate = tDeadlineStr || tCreatedStr;
+
+      let matchesDate = true;
+      if (globalFilters.startDate) {
+        matchesDate = matchesDate && (tPrimaryDate >= globalFilters.startDate || (tCreatedStr && tCreatedStr >= globalFilters.startDate));
+      }
+      if (globalFilters.endDate) {
+        matchesDate = matchesDate && (tPrimaryDate <= globalFilters.endDate || (tCreatedStr && tCreatedStr <= globalFilters.endDate));
+      }
+
+      // Month filter:
+      let matchesMonth = true;
+      if (globalFilters.selectedMonth && globalFilters.selectedMonth !== 'ALL') {
+        const m1 = tCreatedStr.slice(0, 7);
+        const m2 = tDeadlineStr.slice(0, 7);
+        const m3 = tCompletedStr.slice(0, 7);
+        matchesMonth = m1 === globalFilters.selectedMonth || m2 === globalFilters.selectedMonth || m3 === globalFilters.selectedMonth;
+      }
+
+      return matchesSearch && matchesModel && matchesWorkType && matchesDate && matchesMonth;
+    });
+  }, [tasks, user, staffList, globalFilters]);
+
+  const dashboardTasks = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    
+    return filteredTasks.filter(t => {
+      const taskDate = new Date(t.createdAt);
+      return taskDate.getMonth() === currentMonth && taskDate.getFullYear() === currentYear;
+    });
+  }, [filteredTasks]);
+
+  const [isProcessingEmployees, setIsProcessingEmployees] = useState(false);
+  const [isClearingTasks, setIsClearingTasks] = useState(false);
+  const [editingStaff, setEditingStaff] = useState<User | null>(null);
+  const [viewingStaff, setViewingStaff] = useState<User | null>(null);
+  const [staffToDelete, setStaffToDelete] = useState<string | null>(null);
+  const [newStaff, setNewStaff] = useState({
+    employeeId: '',
+    name: '',
+    role: 'TECHNICIAN' as Role,
+    password: '',
+    avatar: '',
+    supervisorId: '',
+    supervisor_ids: [] as string[],
+    assignedEngineers: [] as string[],
+    phone: '',
+    designation: '',
+    email: '',
+    department: 'RAC R&I'
+  });
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const savedUser = localStorage.getItem('user');
+    if (token && savedUser) {
+      try {
+        setUser(JSON.parse(savedUser));
+        setIsLoggedIn(true);
+        const userObj = JSON.parse(savedUser);
+        if (userObj.role === 'CBO' || userObj.role === 'DCBO') {
+          fetchTasks(token, true);
+        } else {
+          fetchTasks(token);
+        }
+        if (userObj.role === 'SUPER_ADMIN') {
+          // Auto-process employees on load for Super Admin
+          handleProcessEmployees(true);
+          fetchBackupSettings();
+        }
+        if (['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(userObj.role)) {
+          fetchStaff(token);
+        }
+        fetchAttendance(token);
+        fetchSmartTimerData(token);
+      } catch (err) {
+        console.error('Failed to parse saved user:', err);
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'backup_restore' && user?.role === 'SUPER_ADMIN') {
+      fetchBackupSettings();
+    }
+  }, [activeTab, user?.role]);
+
+  const handleRecalculate = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    
+    setIsLoading(true);
+    try {
+      const response = await fetchJson('/api/admin/recalculate', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.success) {
+        toast.success("Points recalculated successfully from database!");
+        fetchTasks(token);
+        fetchStaff(token);
+        fetchPoints(token);
+      }
+    } catch (err) {
+      console.error('Recalculate error:', err);
+      toast.error("Failed to recalculate points.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchSecurityData = async () => {
+    const token = localStorage.getItem('token');
+    if (!token || user?.role !== 'SUPER_ADMIN') return;
+    
+    try {
+      const [logs, sessions, suspicious, locked, audit, lockedAccs] = await Promise.all([
+        fetchJson('/api/admin/activity-logs', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetchJson('/api/admin/active-sessions', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetchJson('/api/admin/suspicious-logins', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetchJson('/api/admin/locked-devices', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetchJson('/api/admin/audit-logs', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetchJson('/api/admin/locked-accounts', { headers: { 'Authorization': `Bearer ${token}` } })
+      ]);
+      
+      setActivityLogs(logs);
+      setActiveSessions(sessions);
+      setSuspiciousLogins(suspicious);
+      setLockedDevices(locked);
+      setAuditLogs(audit);
+      setLockedAccounts(lockedAccs);
+    } catch (err) {
+      console.error('Fetch security data error:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (isLoggedIn && user?.role === 'SUPER_ADMIN') {
+      fetchSecurityData();
+      const interval = setInterval(fetchSecurityData, 30000); // Refresh every 30s
+      return () => clearInterval(interval);
+    }
+  }, [isLoggedIn, user]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      if (activeTab === 'reports') {
+        fetchTasks(token, true);
+      } else {
+        fetchTasks(token, false);
+      }
+    }
+  }, [activeTab]);
+
+  const fetchStaff = async (token: string, skipUserUpdate = false) => {
+    try {
+      const data = await fetchJson('/api/users', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (Array.isArray(data)) {
+        setStaffList(data);
+        // Update current user state if found in the list to reflect live mapping changes
+        // But skip it if a modal is open to avoid a full-app re-render that might disrupt typing
+        if (user && !skipUserUpdate) {
+          const updatedMe = data.find(u => u.id === user.id);
+          if (updatedMe && JSON.stringify(updatedMe) !== JSON.stringify(user)) {
+            setUser(updatedMe);
+            localStorage.setItem('user', JSON.stringify(updatedMe));
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Fetch staff error:', err);
+    }
+  };
+
+  const fetchAttendance = async (token: string) => {
+    try {
+      const data = await fetchJson('/api/attendance', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setAttendance(data);
+    } catch (err) {
+      console.error('Fetch attendance error:', err);
+    }
+  };
+
+  const fetchSmartTimerData = async (token: string) => {
+    try {
+      const [shiftsRes, assignRes, otRes] = await Promise.all([
+        fetch('/api/shifts', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/shifts/assignments', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/overtime', { headers: { 'Authorization': `Bearer ${token}` } })
+      ]);
+      if (shiftsRes.ok) {
+        const shiftsJson = await shiftsRes.json();
+        if (Array.isArray(shiftsJson) && shiftsJson.length > 0) setShifts(shiftsJson);
+      }
+      if (assignRes.ok) {
+        const assignJson = await assignRes.json();
+        if (Array.isArray(assignJson)) setShiftAssignments(assignJson);
+      }
+      if (otRes.ok) {
+        const otJson = await otRes.json();
+        if (Array.isArray(otJson)) setOvertimeRequests(otJson);
+      }
+    } catch (err) {
+      console.error('Fetch smart timer data error:', err);
+    }
+  };
+
+  const fetchEngineerAnalytics = async (
+    token?: string,
+    period: string = engineerAnalyticsPeriod,
+    start: string = customStartDate,
+    end: string = customEndDate
+  ) => {
+    const authToken = token || localStorage.getItem('token');
+    if (!authToken || !canViewEngineerAnalytics) return;
+    setIsLoadingEngineerAnalytics(true);
+    try {
+      let url = `/api/analytics/engineer-performance?period=${period}`;
+      if (period === 'custom' && start && end) {
+        url += `&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`;
+      }
+      const data = await fetchJson(url, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      setEngineerAnalyticsData(data);
+    } catch (err) {
+      console.error('Fetch engineer analytics error:', err);
+    } finally {
+      setIsLoadingEngineerAnalytics(false);
+    }
+  };
+
+  const getTodayAttendanceRecord = (empId: string): Attendance | undefined => {
+    const todayIso = new Date().toISOString().split('T')[0];
+    const todayLocal = new Date().toLocaleDateString('en-CA');
+    
+    // Find record matching today's date (search in reverse to get most recent)
+    const match = attendance.slice().reverse().find(a => 
+      (a.technicianId === empId || (a as any).employeeId === empId) && 
+      (a.date === todayIso || a.date === todayLocal)
+    );
+    if (match) return match;
+    
+    // Fallback to most recent record for this employee
+    return attendance.slice().reverse().find(a => 
+      a.technicianId === empId || (a as any).employeeId === empId
+    );
+  };
+
+  const getStaffAttendanceStatus = (person: User): 'PRESENT' | 'LEAVE' | 'SHORT_LEAVE' | 'SHIFT_A' | 'SHIFT_B' | 'ABSENT' => {
+    const rec = getTodayAttendanceRecord(person.employeeId);
+    if (rec && rec.status) {
+      if (rec.status === 'SHIFT_6_2') return 'SHIFT_A';
+      if (rec.status === 'SHIFT_2_6') return 'SHIFT_B';
+      return rec.status as any;
+    }
+    if (person.status === 'ON_LEAVE') return 'LEAVE';
+    if (person.status === 'SHORT_LEAVE') return 'SHORT_LEAVE';
+    if (person.status === 'SHIFT_OFF') return 'SHIFT_A';
+    return 'PRESENT';
+  };
+
+  const handleUpdateAttendance = async (technicianId: string, status: string) => {
+    const empId = String(technicianId || '').trim();
+    if (!empId) return;
+
+    const token = localStorage.getItem('token');
+    const todayIso = new Date().toISOString().split('T')[0];
+    const todayLocal = new Date().toLocaleDateString('en-CA');
+
+    // 1. Optimistically update attendance state immediately
+    setAttendance(prev => {
+      // Remove any duplicate records for this technician for today
+      const filtered = prev.filter(a => 
+        !((a.technicianId === empId || (a as any).employeeId === empId) && 
+          (a.date === todayIso || a.date === todayLocal))
+      );
+      filtered.unshift({
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+        technicianId: empId,
+        status: status as any,
+        date: todayIso
+      });
+      return filtered;
+    });
+
+    // 2. Optimistically update staffList user status immediately
+    setStaffList(prev => prev.map(s => {
+      if (s.employeeId !== empId && s.id !== empId) return s;
+      let nextStatus = s.status;
+      if (status === 'PRESENT') {
+        const isWorking = tasks.some(t => 
+          (t.status === 'RUNNING' || (t.status === 'PENDING' && t.requestStatus === 'RECOMMENDED')) && 
+          (t.assignedTo === empId || t.assignedTo === s.name || (t.assignedTechnicians && t.assignedTechnicians.some((at: any) => at.employeeId === empId)))
+        );
+        nextStatus = isWorking ? 'WORKING' : 'FREE';
+      } else if (status === 'LEAVE' || status === 'ABSENT') {
+        nextStatus = 'ON_LEAVE';
+      } else if (status === 'SHORT_LEAVE') {
+        nextStatus = 'SHORT_LEAVE';
+      } else if (status === 'SHIFT_A' || status === 'SHIFT_B' || status === 'SHIFT_6_2' || status === 'SHIFT_2_6') {
+        const hour = new Date().getHours();
+        const isWorking = (status === 'SHIFT_A' && hour >= 6 && hour < 14) || 
+                          (status === 'SHIFT_B' && hour >= 14 && hour < 22);
+        nextStatus = isWorking ? 'FREE' : 'SHIFT_OFF';
+      }
+      return { ...s, status: nextStatus };
+    }));
+
+    // 3. User feedback
+    const targetStaff = staffList.find(s => s.employeeId === empId || s.id === empId);
+    const staffName = targetStaff?.name || empId;
+    const statusLabel = status === 'SHORT_LEAVE' ? 'Short-Leave' :
+                        status === 'SHIFT_A' ? 'Shift A (6AM-2PM)' :
+                        status === 'SHIFT_B' ? 'Shift B (2PM-10PM)' :
+                        status;
+    toast.success(`Marked ${staffName} as ${statusLabel}`);
+
+    try {
+      await fetchJson('/api/attendance', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ technicianId: empId, status, date: todayIso })
+      });
+      if (token) {
+        await Promise.all([
+          fetchAttendance(token),
+          fetchStaff(token, isAnyModalOpen)
+        ]);
+      }
+    } catch (err) {
+      console.error('Update attendance error:', err);
+      toast.error('Failed to save attendance to server');
+    }
+  };
+
+  const compressImage = (base64Str: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.src = base64Str;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 400;
+        const MAX_HEIGHT = 400;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.9)); // High quality JPEG
+      };
+    });
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) { // Increased to 5MB for better source quality
+        toast.error("File is too large. Please choose an image under 5MB.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const compressed = await compressImage(reader.result as string);
+        setNewStaff({ ...newStaff, avatar: compressed });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const shiftingTechnicianIds = [
+    '20368', '52903', '50328', '42692', '43264', '43249', 
+    '60578', '60914', '62536', '63513', '64456', '63124'
+  ];
+
+  const handleStaffSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const url = editingStaff ? `/api/users/${editingStaff.id}` : '/api/users';
+      const method = editingStaff ? 'PUT' : 'POST';
+      
+      let staffData = { ...newStaff };
+      if (staffData.phone && typeof staffData.phone === 'string' && !staffData.phone.startsWith('0') && /^\d+$/.test(staffData.phone)) {
+        staffData.phone = '0' + staffData.phone;
+      }
+
+      // Ensure supervisor_ids is sent for shifting technicians
+      if (shiftingTechnicianIds.includes(staffData.employeeId)) {
+        // If it's a shifting technician, we use supervisor_ids
+        // supervisorId might be empty or single, but we prioritize supervisor_ids
+      } else {
+        // For others, we might want to clear supervisor_ids or keep it empty
+        staffData.supervisor_ids = [];
+      }
+
+      const data = await fetchJson(url, {
+        method,
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(staffData)
+      });
+      
+      setIsStaffModalOpen(false);
+      setEditingStaff(null);
+      setNewStaff({ employeeId: '', name: '', role: 'TECHNICIAN', password: '', avatar: '', supervisorId: '', supervisor_ids: [], assignedEngineers: [], phone: '', designation: '', email: '', department: 'RAC R&I' });
+      fetchStaff(token!);
+    } catch (err) {
+      console.error('Staff submit error:', err);
+      toast.error('An unexpected error occurred');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (passwordData.newPassword !== passwordData.confirmPassword) {
+      toast.error("New passwords do not match");
+      return;
+    }
+    if (passwordData.newPassword.length < 6) {
+      toast.error("Password must be at least 6 characters long");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      await fetchJson('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          currentPassword: passwordData.currentPassword, 
+          newPassword: passwordData.newPassword 
+        })
+      });
+      toast.success("Password changed successfully");
+      setIsChangePasswordModalOpen(false);
+      setPasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    } catch (err: any) {
+      toast.error(err.message || "Failed to change password");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPasswordUser) return;
+    if (resetPasswordData.newPassword !== resetPasswordData.confirmPassword) {
+      toast.error("Passwords do not match");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      await fetchJson(`/api/users/${resetPasswordUser.id}/reset-password`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ newPassword: resetPasswordData.newPassword })
+      });
+      toast.success(`Password for ${resetPasswordUser.name} reset successfully`);
+      setIsResetPasswordModalOpen(false);
+      setResetPasswordUser(null);
+      setResetPasswordData({ newPassword: '', confirmPassword: '' });
+    } catch (err: any) {
+      toast.error(err.message || "Failed to reset password");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteStaff = async (id: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetchJson(`/api/users/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setStaffToDelete(null);
+      fetchStaff(token!);
+      toast.success('Staff member deleted successfully');
+    } catch (err: any) {
+      console.error('Delete staff error:', err);
+      toast.error(err.message || 'An unexpected error occurred');
+    }
+  };
+
+  const handleBackup = async () => {
+    try {
+      console.log('Initiating backup...');
+      const token = localStorage.getItem('token');
+      const data = await fetchJson('/api/system/backup', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      console.log('Backup data received:', data);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `daily_work_update_backup_${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      console.log('Backup download triggered');
+    } catch (err) {
+      console.error('Backup error:', err);
+      toast.error('Failed to download backup');
+    }
+  };
+
+  const handlePanelBackup = async (type: 'tasks' | 'full', format: 'json' | 'excel') => {
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/backup/${user?.role}/${type}?format=${format}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (handleAuthError(response)) {
+        throw new Error('Session expired or invalid. Please log in again.');
+      }
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Backup failed');
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const ext = format === 'json' ? 'json' : 'xlsx';
+      a.download = `backup_${user?.role?.toLowerCase()}_${type}_${new Date().toISOString().slice(0,10)}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Panel backup error:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to download backup');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSyncData = async () => {
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const data = await fetchJson('/api/admin/sync-data', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      toast.success(data.message || 'All data synchronized successfully');
+      await fetchTasks(token);
+      await fetchStaff(token);
+      await fetchPoints(token);
+      await fetchPerformance(token);
+    } catch (err) {
+      console.error('Sync data error:', err);
+      toast.error('Failed to synchronize data');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchBackupSettings = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    setIsLoadingBackupSettings(true);
+    try {
+      const data = await fetchJson('/api/system/backup-settings', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setBackupSettings(data);
+    } catch (err: any) {
+      console.error('Failed to load backup settings:', err);
+    } finally {
+      setIsLoadingBackupSettings(false);
+    }
+  };
+
+  const handleToggleAutoBackup = async () => {
+    const token = localStorage.getItem('token');
+    if (!token || !backupSettings) return;
+    const newStatus = !backupSettings.autoBackupEnabled;
+    try {
+      const res = await fetchJson('/api/system/backup-settings', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ enabled: newStatus })
+      });
+      if (res.success) {
+        toast.success(newStatus ? 'Hourly auto data backup enabled!' : 'Hourly auto backup paused');
+        await fetchBackupSettings();
+      }
+    } catch (err: any) {
+      toast.error('Failed to update auto backup setting: ' + err.message);
+    }
+  };
+
+  const handleInstantBackup = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    setIsTriggeringBackup(true);
+    try {
+      const res = await fetchJson('/api/system/backup-now', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      toast.success(res.message || 'Database snapshot created successfully!');
+      await fetchBackupSettings();
+    } catch (err: any) {
+      toast.error('Failed to create backup: ' + err.message);
+    } finally {
+      setIsTriggeringBackup(false);
+    }
+  };
+
+  const handleDownloadDbFile = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/system/download-db', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `rac-ri-daily-work-db-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Live database (db.json) downloaded successfully!');
+    } catch (err: any) {
+      toast.error('Failed to download database file: ' + err.message);
+    }
+  };
+
+  const handleDownloadSnapshot = async (filename: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/system/backups/${encodeURIComponent(filename)}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      toast.error('Failed to download backup snapshot: ' + err.message);
+    }
+  };
+
+  const handleRestoreSnapshot = async (filename: string) => {
+    if (!window.confirm(`Are you sure you want to restore the system to snapshot "${filename}"? Current data will be replaced by the records in this backup.`)) {
+      return;
+    }
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    setIsRestoringBackupFile(filename);
+    try {
+      const res = await fetchJson('/api/system/restore-backup', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ filename })
+      });
+      toast.success(res.message || 'System restored successfully!');
+      await fetchTasks(token);
+      await fetchStaff(token);
+      await fetchAttendance(token);
+      await fetchBackupSettings();
+    } catch (err: any) {
+      toast.error('Restore failed: ' + err.message);
+    } finally {
+      setIsRestoringBackupFile(null);
+    }
+  };
+
+  const handleUploadDbFileRestore = async (file: File) => {
+    if (!window.confirm(`Are you sure you want to restore data from uploaded file "${file.name}"? This will update all tasks and system records.`)) {
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const token = localStorage.getItem('token');
+      const res = await fetchJson('/api/system/restore', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(parsed)
+      });
+      toast.success(res.message || 'Database file restored successfully!');
+      if (token) {
+        await fetchTasks(token);
+        await fetchStaff(token);
+        await fetchAttendance(token);
+        await fetchBackupSettings();
+      }
+    } catch (err: any) {
+      toast.error('Failed to restore from uploaded file: ' + err.message);
+    } finally {
+      setIsLoading(false);
+      if (dbRestoreFileInputRef.current) dbRestoreFileInputRef.current.value = '';
+    }
+  };
+
+  const handlePanelRestore = async (file: File) => {
+    if (!window.confirm(`Are you sure you want to restore data from ${file.name}? This will overwrite current data in your scope.`)) {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const formData = new FormData();
+      formData.append('backup', file);
+
+      const response = await fetch(`/api/restore/${user?.role}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+
+      if (handleAuthError(response)) {
+        throw new Error('Session expired or invalid. Please log in again.');
+      }
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Restore failed');
+      }
+
+      toast.success(result.message || 'Restore successful');
+      if (token) {
+        await fetchTasks(token);
+        await fetchStaff(token);
+        await fetchPoints(token);
+        await fetchAttendance(token);
+      }
+    } catch (err) {
+      console.error('Panel restore error:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to restore data');
+    } finally {
+      setIsLoading(false);
+      if (panelRestoreInputRef.current) panelRestoreInputRef.current.value = '';
+    }
+  };
+
+  const [isRestoreConfirmOpen, setIsRestoreConfirmOpen] = useState(false);
+  const [pendingRestoreFile, setPendingRestoreFile] = useState<File | null>(null);
+
+  const handleRestoreClick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPendingRestoreFile(file);
+    setIsRestoreConfirmOpen(true);
+  };
+
+  const executeRestore = async () => {
+    if (!pendingRestoreFile) return;
+    setIsRestoreConfirmOpen(false);
+    setIsLoading(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const content = event.target?.result as string;
+          const backupData = JSON.parse(content);
+          
+          if (!backupData.users || !Array.isArray(backupData.users)) {
+            throw new Error('Invalid backup file: users array is missing or invalid');
+          }
+
+          const token = localStorage.getItem('token');
+          if (!token) throw new Error('No authentication token found. Please log in again.');
+          
+          const data = await fetchJson('/api/system/restore', {
+            method: 'POST',
+            headers: { 
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(backupData)
+          });
+
+          toast.success(`${data.message}. Restored ${data.userCount} users and ${data.taskCount} tasks. The application will now reload.`);
+          window.location.reload();
+        } catch (err) {
+          console.error('Restore processing error:', err);
+          toast.error('Failed to restore: ' + (err instanceof Error ? err.message : 'Invalid backup file format'));
+          setIsLoading(false);
+        }
+      };
+      reader.readAsText(pendingRestoreFile);
+    } catch (err) {
+      console.error('Restore setup error:', err);
+      toast.error('An error occurred during restoration setup');
+      setIsLoading(false);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setPendingRestoreFile(null);
+    }
+  };
+
+  const handleProcessEmployees = async (fileOrSilent?: File | boolean) => {
+    const isFile = fileOrSilent instanceof File;
+    const silent = typeof fileOrSilent === 'boolean' ? fileOrSilent : false;
+    console.log('handleProcessEmployees called, isFile:', isFile, 'silent:', silent);
+    if (!silent) setIsProcessingEmployees(true);
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      
+      let data: any;
+      if (isFile) {
+        const formData = new FormData();
+        formData.append('file', fileOrSilent);
+        const res = await fetch('/api/system/process-employees', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData
+        });
+        data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to process employee file');
+        }
+      } else {
+        data = await fetchJson('/api/system/process-employees', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      }
+      
+      if (!silent) {
+        toast.success(`${data.message}\nCreated: ${data.createdCount}\nUpdated: ${data.updatedCount}`);
+      } else {
+        console.log('Auto-processed employees:', data);
+      }
+      fetchStaff(token);
+    } catch (err) {
+      console.error('Process employees error:', err);
+      if (!silent) toast.error(err instanceof Error ? err.message : 'Failed to process employee data');
+    } finally {
+      if (!silent) setIsProcessingEmployees(false);
+    }
+  };
+
+  const handleClearTasks = async () => {
+    if (!window.confirm("Are you sure you want to clear all tasks and dummy operational data? All employee profiles, credentials, and roles will be kept intact.")) {
+      return;
+    }
+    setIsClearingTasks(true);
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetchJson('/api/system/clear-tasks', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      toast.success(res.message || "All dummy tasks and operational data cleared!");
+      fetchTasks(token);
+      fetchStaff(token);
+      fetchAttendance(token);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to clear tasks.");
+    } finally {
+      setIsClearingTasks(false);
+    }
+  };
+
+  const fetchAiInsights = async (tasks: Task[]) => {
+    if (!tasks || tasks.length === 0) return;
+    
+    // Simple cache key based on task IDs and statuses
+    const cacheKey = tasks.map(t => `${t.id}-${t.status}`).sort().join('|');
+    if (aiCache.current[cacheKey]) {
+      setAiInsights(aiCache.current[cacheKey]);
+      return;
+    }
+
+    setIsAiLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const simplifiedTasks = tasks.slice(0, 30).map(t => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        urgency: t.urgency,
+        deadline: t.deadline
+      }));
+
+      const data = await fetchJson('/api/ai/insights', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ tasks: simplifiedTasks })
+      });
+
+      if (data && (data.urgency || data.reason)) {
+        setAiInsights(data);
+        aiCache.current[cacheKey] = data;
+      }
+    } catch {
+      // Fallback in case of temporary offline/network issues
+      const fallback = {
+        urgency: 'REGULAR',
+        reason: 'Tasks are progressing at a standard pace with balanced distribution.',
+        delayPrediction: { isLikelyDelayed: false, probability: 12 },
+        efficiencyTip: 'Assign high-priority tasks to available technicians during morning peak hours.'
+      };
+      setAiInsights(fallback);
+      aiCache.current[cacheKey] = fallback;
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tasks.length > 0) {
+      const timer = setTimeout(() => {
+        fetchAiInsights(tasks);
+      }, 3000); // 3 second debounce
+      return () => clearTimeout(timer);
+    }
+  }, [tasks]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token && (activeTab === 'staff' || activeTab === 'analytics' || activeTab === 'attendance' || activeTab === 'technician_monitoring')) {
+      fetchStaff(token, isAnyModalOpen);
+      if (activeTab === 'analytics') {
+        fetchTasks(token);
+        fetchPoints(token);
+        if (canViewEngineerAnalytics) {
+          fetchEngineerAnalytics(token);
+        }
+      }
+      if (activeTab === 'attendance' || activeTab === 'technician_monitoring') {
+        fetchAttendance(token);
+      }
+    }
+  }, [activeTab, isAnyModalOpen]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token || !isLoggedIn) return;
+
+    // Initial fetch
+    if (user?.role === 'CBO' || user?.role === 'DCBO') {
+      fetchTasks(token, true);
+    } else {
+      fetchTasks(token);
+    }
+    fetchNotifications(token);
+    fetchPoints(token);
+    fetchPerformance(token);
+    fetchAttendance(token);
+    fetchSmartTimerData(token);
+    if (['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(user?.role || '')) {
+      fetchStaff(token);
+    }
+
+    // Set up auto-refresh every 10 seconds
+    const interval = setInterval(() => {
+      console.log('Auto-refreshing data (Smart Polling)...');
+      if (user?.role === 'CBO' || user?.role === 'DCBO') {
+        fetchTasks(token, true);
+      } else {
+        fetchTasks(token);
+      }
+      fetchNotifications(token);
+      fetchPoints(token);
+      fetchPerformance(token);
+      fetchAttendance(token);
+      fetchSmartTimerData(token);
+      if (['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(user?.role || '')) {
+        // Background fetch staff but skip full user state update if modal is open
+        fetchStaff(token, isAnyModalOpen);
+      }
+    }, 10000);
+
+    // Refresh on window focus
+    const handleFocus = () => {
+      console.log('Window focused, refreshing data...');
+      if (user?.role === 'CBO' || user?.role === 'DCBO') {
+        fetchTasks(token, true);
+      } else {
+        fetchTasks(token);
+      }
+      fetchNotifications(token);
+      fetchPoints(token);
+      fetchPerformance(token);
+      fetchAttendance(token);
+      fetchSmartTimerData(token);
+      if (['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(user?.role || '')) {
+        fetchStaff(token, isAnyModalOpen);
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+
+    // Instant real-time Server-Sent Events (SSE) synchronization
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = new EventSource('/api/events');
+      eventSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (['TASK_UPDATED', 'TASK_CREATED', 'POINTS_UPDATED', 'TASK_DELETED', 'ATTENDANCE_UPDATED', 'SHIFTS_UPDATED', 'OVERTIME_UPDATED', 'TIMER_TICK'].includes(payload.type)) {
+            if (user?.role === 'CBO' || user?.role === 'DCBO') {
+              fetchTasks(token, true);
+            } else {
+              fetchTasks(token);
+            }
+            if (['SHIFTS_UPDATED', 'OVERTIME_UPDATED', 'TIMER_TICK', 'ATTENDANCE_UPDATED', 'TASK_UPDATED', 'TASK_CREATED'].includes(payload.type)) {
+              fetchSmartTimerData(token);
+              fetchAttendance(token);
+            }
+            fetchPoints(token);
+            fetchStaff(token, isAnyModalOpen);
+            fetchPerformance(token);
+            if (activeTab === 'analytics' && canViewEngineerAnalytics) {
+              fetchEngineerAnalytics(token);
+            }
+          }
+        } catch {
+          // ignore keepalive comments
+        }
+      };
+    } catch (sseErr) {
+      console.warn('SSE initialization error:', sseErr);
+    }
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [isLoggedIn, user, isAnyModalOpen, activeTab]);
+
+  const handleForceLogout = async (sessionId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetchJson('/api/admin/sessions/force-logout', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ sessionId })
+      });
+      toast.success("Session terminated");
+      fetchSecurityData();
+    } catch (err) {
+      toast.error("Failed to terminate session");
+    }
+  };
+
+  const handleLockDevice = async (data: any) => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetchJson('/api/admin/devices/lock', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(data)
+      });
+      toast.success("Device locked");
+      fetchSecurityData();
+    } catch (err) {
+      toast.error("Failed to lock device");
+    }
+  };
+
+  const handleUnlockDevice = async (id: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetchJson('/api/admin/devices/unlock', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ id })
+      });
+      toast.success("Device unlocked");
+      fetchSecurityData();
+    } catch (err) {
+      toast.error("Failed to unlock device");
+    }
+  };
+
+  const handleUnlockAccount = async (employeeId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      await fetchJson('/api/admin/unlock-account', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ employeeId })
+      });
+      toast.success("Account unlocked");
+      fetchSecurityData();
+    } catch (err) {
+      toast.error("Failed to unlock account");
+    }
+  };
+
+  // Login Handler
+  const handleLogout = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        await fetchJson('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      }
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setIsLoggedIn(false);
+    setUser(null);
+    setTasks([]);
+    setStaffList([]);
+    setPointTransactions([]);
+    setSelectedTask(null);
+    setTaskToDelete(null);
+    setEditingTask(null);
+    setStatusUpdateTask(null);
+  };
+
+  const [showPassword, setShowPassword] = useState(false);
+
+  const [pointTransactions, setPointTransactions] = useState<PointTransaction[]>([]);
+  const [technicianPerformance, setTechnicianPerformance] = useState<TechnicianPerformance[]>([]);
+  const [recPoints, setRecPoints] = useState<Record<string, number>>({});
+  const [recDeadlines, setRecDeadlines] = useState<Record<string, string>>({});
+
+  const fetchPoints = async (token: string) => {
+    try {
+      const data = await fetchJson('/api/points', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setPointTransactions(data);
+    } catch (err) {
+      console.error('Fetch points error:', err);
+    }
+  };
+
+  const fetchPerformance = async (token: string) => {
+    try {
+      const data = await fetchJson('/api/performance', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      setTechnicianPerformance(data);
+    } catch (err) {
+      console.error('Fetch performance error:', err);
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      // Get Device Name safely
+      let deviceName = 'Web-Client';
+      try {
+        deviceName = localStorage.getItem('deviceName') || 'Web-Client';
+      } catch {
+        deviceName = 'Web-Client';
+      }
+
+      console.log('Attempting login with:', loginData.employeeId);
+      const data = await fetchJson('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...loginData,
+          deviceName: deviceName,
+          localIp: 'Web-Client',
+          platform: typeof navigator !== 'undefined' ? navigator.platform : 'Web',
+          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Browser'
+        })
+      });
+      
+      if (data.token) {
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
+        setUser(data.user);
+        setIsLoggedIn(true);
+        if (data.user.role === 'CBO' || data.user.role === 'DCBO') {
+          fetchTasks(data.token, true);
+        } else {
+          fetchTasks(data.token);
+        }
+        fetchPoints(data.token);
+        fetchAttendance(data.token);
+        fetchSmartTimerData(data.token);
+        
+        // Lazy Load: Non-critical data
+        setTimeout(() => {
+          fetchPerformance(data.token);
+          if (['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(data.user.role)) {
+            fetchStaff(data.token);
+          }
+        }, 1000);
+      } else {
+        toast.error(data.error || 'Invalid credentials');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'An unexpected error occurred during login');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const [notifications, setNotifications] = useState<{id: string, message: string, read: boolean, timestamp: string}[]>([]);
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+
+  const fetchTasks = async (token: string, all = true) => {
+    try {
+      // Ensure all persistent tasks are retrieved so task records never disappear after 2 days
+      const url = all ? '/api/tasks?all=true' : '/api/tasks?all=true';
+      const data = await fetchJson(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (data) {
+        setTasks(data);
+        setSelectedTask(prev => prev ? (data.find((t: Task) => t.id === prev.id) || prev) : null);
+      }
+    } catch (err) {
+      console.error('Fetch tasks error:', err);
+    }
+  };
+
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+
+  const openedTaskIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (selectedTask && isTaskDetailsModalOpen) {
+      // Only initialize ONCE when opening the modal for this task.
+      // Do NOT re-initialize and wipe user changes when staffList or component re-renders!
+      if (openedTaskIdRef.current !== selectedTask.id) {
+        openedTaskIdRef.current = selectedTask.id;
+        setTaskRemarks(selectedTask.remarks || '');
+        setDistributeWorkType(selectedTask.workType || 'SINGLE');
+        setSelectedTechs(selectedTask.assignedTechnicians || []);
+        if (selectedTask.workType !== 'TEAM' && selectedTask.assignedTo && selectedTask.assignedTo !== 'Team Work') {
+          const found = staffList.find(s => 
+            s.id === selectedTask.assignedTo || 
+            s.employeeId === selectedTask.assignedTo || 
+            (s.name && s.name.toLowerCase() === String(selectedTask.assignedTo).toLowerCase())
+          );
+          if (found && found.role === 'TECHNICIAN') {
+            setAssignToTech(found.id);
+          } else {
+            setAssignToTech('');
+          }
+        } else {
+          setAssignToTech('');
+        }
+        setTechSearchQuery('');
+        setAssignDuration(selectedTask.estimatedDuration || '60');
+        setModalRecPoints(selectedTask.points && selectedTask.points > 0 ? selectedTask.points : 1);
+        setModalRecDeadline(selectedTask.engineer_deadline || selectedTask.deadline || '');
+        const creatorUser = staffList.find(s => s.employeeId === selectedTask.createdBy || s.id === selectedTask.createdBy);
+        let initialEng = selectedTask.concernEngineerId || '';
+        if (!initialEng && creatorUser && Array.isArray(creatorUser.assignedEngineers) && creatorUser.assignedEngineers.length > 0) {
+          initialEng = creatorUser.assignedEngineers[0];
+        }
+        setModalRecConcernEngId(initialEng);
+      }
+    } else if (!isTaskDetailsModalOpen) {
+      openedTaskIdRef.current = null;
+    }
+  }, [selectedTask?.id, isTaskDetailsModalOpen]);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [statusUpdateTask, setStatusUpdateTask] = useState<Task | null>(null);
+  const [statusUpdateData, setStatusUpdateData] = useState({ progress: 0, status: 'RUNNING' as TaskStatus, remarks: '', actualCompletionTime: '' });
+  const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
+  const [taskRemarks, setTaskRemarks] = useState('');
+  const [assignToTech, setAssignToTech] = useState('');
+  const [techSearchQuery, setTechSearchQuery] = useState('');
+  const [assignDuration, setAssignDuration] = useState('60');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const panelRestoreInputRef = useRef<HTMLInputElement>(null);
+  const dbRestoreFileInputRef = useRef<HTMLInputElement>(null);
+  const employeeExcelInputRef = useRef<HTMLInputElement>(null);
+
+  // Super Admin Hourly Auto-Backup and DB Persistence State
+  const [backupSettings, setBackupSettings] = useState<{
+    autoBackupEnabled: boolean;
+    intervalMinutes: number;
+    lastBackupTime: string | null;
+    nextBackupTime: string | null;
+    sourceFolder?: string;
+    liveStats?: { tasksCount: number; usersCount: number; attendanceCount: number };
+    cloudQuota?: {
+      storageMode?: string;
+      isMysqlConfigured?: boolean;
+      mysqlHost?: string | null;
+      mysqlDatabase?: string | null;
+      health?: { ok: boolean; mode: string; message: string; timestamp: string };
+      isQuotaExhausted?: boolean;
+      quotaExhaustedUntil?: string | null;
+    };
+    backups: Array<{
+      filename: string;
+      timestamp: string;
+      size: number;
+      tasksCount: number;
+      usersCount: number;
+      type: string;
+      details?: any;
+      sourceFolder?: string;
+    }>;
+  } | null>(null);
+  const [isLoadingBackupSettings, setIsLoadingBackupSettings] = useState(false);
+  const [isTriggeringBackup, setIsTriggeringBackup] = useState(false);
+  const [isRestoringBackupFile, setIsRestoringBackupFile] = useState<string | null>(null);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+
+  const [newTask, setNewTask] = useState({
+    title: '',
+    model: 'Portable',
+    details: '',
+    urgency: 'REGULAR',
+    assignedTo: '',
+    deadline: '',
+    points: 1,
+    customStartTime: '',
+    estimatedDuration: '',
+    workType: 'SINGLE' as 'SINGLE' | 'TEAM',
+    assignedTechnicians: [] as any[]
+  });
+  const [techSearch, setTechSearch] = useState('');
+  const [selectedTechs, setSelectedTechs] = useState<any[]>([]);
+  const [now, setNow] = useState(new Date());
+
+  const exportToWhatsApp = (technician: User) => {
+    const today = new Date().toLocaleDateString('en-CA');
+    const techTasks = tasks.filter(t => {
+      const isAssigned = t.assignedTo === technician.name || 
+        (t.workType === 'TEAM' && t.assignedTechnicians?.some(at => at.employeeId === technician.employeeId));
+      // Sync with Running Work: Include all RUNNING tasks + any non-completed tasks for today
+      const isRunning = t.status === 'RUNNING';
+      const isForToday = Boolean(typeof t?.deadline === 'string' && t.deadline.startsWith(today));
+      return isAssigned && t.status !== 'COMPLETED' && (isRunning || isForToday);
+    });
+    
+    if (techTasks.length === 0) {
+      toast.info('No pending tasks for today to share.');
+      return;
+    }
+
+    let message = `*Daily Task List - ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}*\n`;
+    message += `*Technician:* ${technician.name} (${technician.employeeId})\n`;
+    message += `--------------------------\n\n`;
+    
+    techTasks.forEach((t, i) => {
+      message += `*${i + 1}. ${t.title}*\n`;
+      message += `Model: ${t.model}\n`;
+      message += `Urgency: ${t.urgency}\n`;
+      message += `Details: ${t.details}\n`;
+      message += `Deadline: ${new Date(t.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}\n\n`;
+    });
+    
+    const encodedMessage = encodeURIComponent(message);
+    let phone = technician.phone || '';
+    // Clean phone number
+    phone = phone.replace(/\D/g, '');
+    if (typeof phone === 'string' && phone.startsWith('0')) {
+      phone = '88' + phone;
+    } else if (typeof phone === 'string' && phone && !phone.startsWith('88')) {
+      phone = '88' + phone;
+    }
+    
+    const whatsappUrl = `https://wa.me/${phone}?text=${encodedMessage}`;
+    
+    // Use a temporary link to trigger the open, which is more reliable
+    const link = document.createElement('a');
+    link.href = whatsappUrl;
+    link.target = '_blank';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    toast.success('Opening WhatsApp...');
+  };
+
+  const handleApproveRequest = async (taskId: string, points?: number, engineer_deadline?: string) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    try {
+      const response = await fetch(`/api/tasks/${taskId}/approve`, {
+        method: 'PUT',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ points, engineer_deadline })
+      });
+      if (handleAuthError(response)) {
+        throw new Error('Session expired or invalid. Please log in again.');
+      }
+      if (response.ok) {
+        const updatedTask = await response.json();
+        setTasks(prev => prev.map(t => (t.id === taskId || t.taskId === taskId) ? updatedTask : t));
+        toast.success(
+          user?.role === 'ENGINEER' 
+            ? 'Task recommended and points confirmed'
+            : (updatedTask.status === 'RUNNING' ? 'Task request approved and started' : 'Team request approved (waiting for other teams)')
+        );
+        Promise.allSettled([
+          fetchStaff(token),
+          fetchPoints(token),
+          fetchTasks(token, true)
+        ]);
+      } else {
+        const data = await response.json();
+        toast.error(data.error || 'Failed to approve request');
+        fetchTasks(token, true);
+      }
+    } catch (error: any) {
+      toast.error(error.message || 'Error approving request on server');
+      fetchTasks(token, true);
+    }
+  };
+
+  const handleRecommendFromModal = async (taskId: string) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    setIsSubmittingRec(true);
+    try {
+      const response = await fetch(`/api/tasks/${taskId}/recommend`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          points: modalRecPoints, 
+          engineer_deadline: modalRecDeadline,
+          concernEngineerId: modalRecConcernEngId 
+        })
+      });
+      if (handleAuthError(response)) {
+        throw new Error('Session expired or invalid. Please log in again.');
+      }
+      if (response.ok) {
+        const updatedTask = await response.json();
+        setTasks(prev => prev.map(t => (t.id === taskId || t.taskId === taskId) ? updatedTask : t));
+        setSelectedTask(updatedTask);
+        const targetEng = staffList.find(s => s.employeeId === updatedTask.concernEngineerId || s.id === updatedTask.concernEngineerId);
+        toast.success(`Task successfully recommended! +${updatedTask.points || modalRecPoints} pts awarded to Concern Engineer ${targetEng?.name ? targetEng.name : ''}.`);
+        Promise.allSettled([
+          fetchStaff(token),
+          fetchPoints(token),
+          fetchTasks(token, true)
+        ]);
+      } else {
+        const data = await response.json();
+        toast.error(data.error || 'Failed to recommend task');
+      }
+    } catch (error: any) {
+      toast.error(error.message || 'Error recommending task on server');
+    } finally {
+      setIsSubmittingRec(false);
+    }
+  };
+
+  const handleRejectRequest = async (taskId: string, remarks: string) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    // Optimistically reject immediately
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, requestStatus: 'REJECTED' } : t));
+    toast.success('Task request rejected');
+
+    (async () => {
+      try {
+        const response = await fetch(`/api/tasks/${taskId}/reject`, {
+          method: 'POST',
+          headers: { 
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ remarks })
+        });
+        if (handleAuthError(response)) {
+          throw new Error('Session expired or invalid. Please log in again.');
+        }
+        if (response.ok) {
+          Promise.allSettled([
+            fetchStaff(token),
+            fetchPoints(token)
+          ]);
+        } else {
+          toast.error('Failed to reject request');
+          fetchTasks(token, true);
+        }
+      } catch (error) {
+        toast.error('Error rejecting request on server');
+        fetchTasks(token, true);
+      }
+    })();
+  };
+
+  const isOfficerInScopeForTask = (task: Task, currentUser: User): boolean => {
+    if (currentUser.role !== 'OFFICER') return false;
+    const myEmpId = String(currentUser.employeeId || '').trim();
+    const myId = String(currentUser.id || '').trim();
+    const myName = (currentUser.name || '').toLowerCase().trim();
+
+    const createdBy = String(task.createdBy || '').trim();
+    const assignedTo = String(task.assignedTo || '').trim();
+    const responsibleOfficerId = String(task.responsibleOfficerId || '').trim();
+    const assignedBy = String(task.assignedBy || '').trim();
+
+    // 1. Created by this Officer
+    if (createdBy === myEmpId || createdBy === myId || (createdBy && createdBy.toLowerCase() === myName)) {
+      return true;
+    }
+    // 2. Assigned directly to this Officer (e.g., by Engineer or Manager)
+    if (assignedTo === myEmpId || assignedTo === myId || (assignedTo && assignedTo.toLowerCase() === myName)) {
+      return true;
+    }
+    // 3. Responsible Officer
+    if (responsibleOfficerId === myEmpId || responsibleOfficerId === myId) {
+      return true;
+    }
+    // 4. Assigned by this Officer
+    if (assignedBy === myEmpId || assignedBy === myId) {
+      return true;
+    }
+    // 5. Assigned to a technician supervised by this Officer
+    const subordinates = staffList.filter(s => s.role === 'TECHNICIAN' && isStaffInScope(s));
+    const subEmpIds = new Set(subordinates.map(s => String(s.employeeId || '').trim()));
+    const subNames = new Set(subordinates.map(s => (s.name || '').toLowerCase().trim()));
+    const subIds = new Set(subordinates.map(s => String(s.id || '').trim()));
+
+    if (assignedTo && (subEmpIds.has(assignedTo) || subNames.has(assignedTo.toLowerCase()) || subIds.has(assignedTo))) {
+      return true;
+    }
+    if (task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians)) {
+      if (task.assignedTechnicians.some(at => 
+        subEmpIds.has(String(at.employeeId || '').trim()) || 
+        subNames.has(String(at.name || '').toLowerCase().trim()) || 
+        subIds.has(String((at as any).id || '').trim())
+      )) {
+        return true;
+      }
+    }
+    // 6. Cross-team approval requested from this Officer
+    if (Array.isArray(task.teamApprovals) && task.teamApprovals.some((a: any) => 
+      String(a.officerId || '').trim() === myEmpId || 
+      String(a.officerId || '').trim() === myId || 
+      (a.officerName && String(a.officerName).toLowerCase().trim() === myName)
+    )) {
+      return true;
+    }
+    return false;
+  };
+
+  const canViewTask = (_task: Task, currentUser?: User | null): boolean => {
+    if (!currentUser) return false;
+    return true;
+  };
+
+  const canAssignTask = (task: Task, currentUser?: User | null): boolean => {
+    if (!currentUser) return false;
+    // Completed tasks cannot be reassigned by non-executives
+    if ((task.status || '').toUpperCase() === 'COMPLETED') return false;
+
+    const isSuperAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.employeeId === 'jhfboss';
+    const isExecutive = ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(currentUser.role) || isSuperAdmin;
+    if (isExecutive) return true;
+
+    if (currentUser.role === 'OFFICER') {
+      return isOfficerInScopeForTask(task, currentUser);
+    }
+
+    if (currentUser.role === 'ENGINEER') {
+      const isCreator = task.createdBy === currentUser.employeeId || task.createdBy === currentUser.id;
+      const isAssigned = task.assignedTo === currentUser.employeeId || task.assignedTo === currentUser.id || (task.assignedTo || '').toLowerCase() === (currentUser.name || '').toLowerCase();
+      const isConcern = task.concernEngineerId === currentUser.employeeId || task.concernEngineerId === currentUser.id;
+      return isCreator || isAssigned || isConcern;
+    }
+
+    if (currentUser.role === 'IN_CHARGE' || currentUser.role === 'MODEL_MANAGER') {
+      return true;
+    }
+
+    return false;
+  };
+
+  const canUpdateTaskStatus = (task: Task, currentUser?: User | null): boolean => {
+    if (!currentUser) return false;
+    if ((task.status || '').toUpperCase() === 'COMPLETED') return false;
+
+    const isSuperAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.employeeId === 'jhfboss';
+    const isExecutive = ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(currentUser.role) || isSuperAdmin;
+    if (isExecutive) return true;
+
+    if (currentUser.role === 'OFFICER') {
+      return isOfficerInScopeForTask(task, currentUser);
+    }
+
+    if (currentUser.role === 'ENGINEER' || currentUser.role === 'IN_CHARGE' || currentUser.role === 'MODEL_MANAGER') {
+      return true;
+    }
+
+    if (currentUser.role === 'TECHNICIAN') {
+      const isAssignedToMe = task.assignedTo === currentUser.id || task.assignedTo === currentUser.employeeId || (task.assignedTo || '').toLowerCase() === (currentUser.name || '').toLowerCase();
+      const isTeamMember = task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.some(at => at.employeeId === currentUser.employeeId || (at as any).id === currentUser.id);
+      return isAssignedToMe || isTeamMember;
+    }
+
+    return false;
+  };
+
+  const canFixTask = (task: Task, currentUser?: User | null): boolean => {
+    if (!currentUser) return false;
+    if ((task.status || '').toUpperCase() === 'COMPLETED') return false;
+
+    const isSuperAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.employeeId === 'jhfboss';
+    const isExecutive = ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(currentUser.role) || isSuperAdmin;
+    if (isExecutive) return true;
+
+    if (currentUser.role === 'OFFICER') {
+      return isOfficerInScopeForTask(task, currentUser);
+    }
+
+    if (currentUser.role === 'ENGINEER' || currentUser.role === 'IN_CHARGE' || currentUser.role === 'MODEL_MANAGER') {
+      return true;
+    }
+
+    return false;
+  };
+
+  const canUpdateTask = (task: Task, currentUser?: User | null): boolean => {
+    if (!currentUser) return false;
+
+    const isSuperAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.employeeId === 'jhfboss';
+    const isExecutive = ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(currentUser.role) || isSuperAdmin;
+    if (isExecutive) return true;
+
+    if ((task.status || '').toUpperCase() === 'COMPLETED') return false;
+
+    if (currentUser.role === 'OFFICER') {
+      return isOfficerInScopeForTask(task, currentUser);
+    }
+
+    if (currentUser.role === 'ENGINEER' || currentUser.role === 'IN_CHARGE' || currentUser.role === 'MODEL_MANAGER') {
+      return true;
+    }
+
+    if (currentUser.role === 'TECHNICIAN') {
+      const isAssignedToMe = task.assignedTo === currentUser.id || task.assignedTo === currentUser.employeeId || (task.assignedTo || '').toLowerCase() === (currentUser.name || '').toLowerCase();
+      const isTeamMember = task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.some(at => at.employeeId === currentUser.employeeId || (at as any).id === currentUser.id);
+      return isAssignedToMe || isTeamMember;
+    }
+
+    return false;
+  };
+
+  const canEditTask = (task: Task, currentUser?: User | null): boolean => {
+    if (!currentUser) return false;
+
+    // Completed tasks are strictly locked against ordinary edits
+    if ((task.status || '').toUpperCase() === 'COMPLETED') {
+      const isSuperAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.employeeId === 'jhfboss';
+      return ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(currentUser.role) || isSuperAdmin;
+    }
+
+    // Officers can edit ONLY tasks they personally created/entered
+    if (currentUser.role === 'OFFICER') {
+      const myEmpId = String(currentUser.employeeId || '').trim();
+      const myId = String(currentUser.id || '').trim();
+      const myName = (currentUser.name || '').toLowerCase().trim();
+      const createdBy = String(task.createdBy || '').trim();
+
+      const isCreator = createdBy === myEmpId || 
+                        createdBy === myId || 
+                        (Boolean(createdBy) && createdBy.toLowerCase() === myName);
+      return Boolean(isCreator);
+    }
+
+    const isSuperAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.employeeId === 'jhfboss';
+    const isExecutive = ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(currentUser.role) || isSuperAdmin;
+    if (isExecutive) return true;
+
+    if (currentUser.role === 'ENGINEER') {
+      const isCreator = task.createdBy === currentUser.employeeId || task.createdBy === currentUser.id;
+      if (isCreator) return true;
+      const creator = staffList.find(s => s.employeeId === task.createdBy || s.id === task.createdBy);
+      if (creator && (creator.assignedEngineers || []).includes(currentUser.employeeId)) return true;
+      return false;
+    }
+
+    if (currentUser.role === 'IN_CHARGE' || currentUser.role === 'MODEL_MANAGER') {
+      return true;
+    }
+
+    return false;
+  };
+
+  const canDeleteTask = (_task: Task, currentUser?: User | null): boolean => {
+    if (!currentUser) return false;
+    // Ordinary Officers can NEVER delete tasks
+    if (currentUser.role === 'OFFICER') return false;
+    if (currentUser.role === 'TECHNICIAN') return false;
+    const isSuperAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.employeeId === 'jhfboss';
+    const isExecutive = ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(currentUser.role) || isSuperAdmin;
+    return isExecutive;
+  };
+
+  const isTaskRequestedForMe = (t: Task) => {
+    if (t.status !== 'REQUESTED' && !(t.status === 'PENDING' && t.requestStatus === 'PENDING')) return false;
+    if (user?.role === 'SUPER_ADMIN') return true;
+
+    // The requesting officer cannot approve their own borrowing request
+    if (t.createdBy === user?.employeeId || t.createdBy === user?.id) return false;
+
+    const currentUserId = user?.id;
+    const currentEmpId = user?.employeeId;
+    const currentName = user?.name ? user.name.toLowerCase() : '';
+
+    // If task has teamApprovals, check if this officer has a pending approval entry
+    if (t.teamApprovals && Array.isArray(t.teamApprovals)) {
+      return t.teamApprovals.some((a: any) => 
+        (a.officerId === currentEmpId || a.officerId === currentUserId || (a.officerName && a.officerName.toLowerCase() === currentName)) &&
+        a.status === 'PENDING'
+      );
+    }
+
+    // Check single assigned technician
+    if (t.assignedTo) {
+      const tech = staffList.find(s => s.id === t.assignedTo || s.employeeId === t.assignedTo || (s.name && t.assignedTo && s.name.toLowerCase() === t.assignedTo.toLowerCase()));
+      if (tech && tech.supervisorId && (tech.supervisorId === currentUserId || tech.supervisorId === currentEmpId)) {
+        return true;
+      }
+    }
+
+    // Check team assigned technicians
+    if (t.workType === 'TEAM' && Array.isArray(t.assignedTechnicians)) {
+      return t.assignedTechnicians.some((at: any) => {
+        const tech = staffList.find(s => s.employeeId === at.employeeId || s.id === at.id || (s.name && at.name && s.name.toLowerCase() === at.name.toLowerCase()));
+        return tech && tech.supervisorId && (tech.supervisorId === currentUserId || tech.supervisorId === currentEmpId);
+      });
+    }
+
+    return false;
+  };
+
+  const isTaskPendingRecommendation = (t: Task) => {
+    const isLeadership = Boolean(user && ['IN_CHARGE', 'HOD', 'DHOD', 'SUPER_ADMIN', 'CBO', 'DCBO'].includes(user.role));
+    const isEngineer = user?.role === 'ENGINEER';
+    if (!isLeadership && !isEngineer) return false;
+
+    const creator = staffList.find(s => s.employeeId === t.createdBy || s.id === t.createdBy);
+    if (!creator || creator.role !== 'OFFICER') return false;
+
+    if (isEngineer && user) {
+      const isMyOfficer = (creator.assignedEngineers || []).includes(user.employeeId) ||
+        creator.supervisorId === user.id || creator.supervisorId === user.employeeId ||
+        t.concernEngineerId === user.employeeId;
+      if (!isMyOfficer) return false;
+    }
+
+    // If already approved and assigned points > 0, it's completed
+    if (t.engineerApproved && (t.points || 0) > 0) return false;
+
+    return (
+      t.requestStatus === 'RECOMMENDED' ||
+      (t.points === 0 && !t.engineerApproved) ||
+      (!t.points && !t.engineerApproved) ||
+      (t.status === 'REQUESTED' && !t.engineerApproved) ||
+      (!t.engineerApproved && (t.status === 'RUNNING' || t.status === 'COMPLETED' || t.status === 'PENDING'))
+    );
+  };
+
+  const handleThemeChange = async (themeId: string, removeBg = false) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/user/theme`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ theme: themeId, removeBg })
+      });
+      if (handleAuthError(response)) {
+        throw new Error('Session expired or invalid. Please log in again.');
+      }
+      if (response.ok) {
+        const updatedUser = await response.json();
+        setUser(updatedUser);
+        toast.success('Theme updated successfully');
+      }
+    } catch (error) {
+      toast.error('Error updating theme');
+    }
+  };
+
+  const handleUploadTaskAttachments = async (taskId: string, files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setIsUploadingAttachment(true);
+    try {
+      const token = localStorage.getItem('token');
+      const formData = new FormData();
+      Array.from(files).forEach((f) => formData.append('files', f));
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/attachments`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+      if (handleAuthError(response)) return;
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to upload attachment');
+      }
+      const result = await response.json();
+      if (result.task) {
+        setTasks(prev => prev.map(t => t.id === result.task.id ? result.task : t));
+        if (selectedTask?.id === result.task.id) setSelectedTask(result.task);
+      }
+      toast.success(`Uploaded ${result.added?.length || 1} attachment(s)`);
+    } catch (err: any) {
+      toast.error(err.message || 'Attachment upload failed');
+    } finally {
+      setIsUploadingAttachment(false);
+    }
+  };
+
+  const handleDeleteTaskAttachment = async (taskId: string, attId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attId)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (handleAuthError(response)) return;
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to remove attachment');
+      }
+      const result = await response.json();
+      if (result.task) {
+        setTasks(prev => prev.map(t => t.id === result.task.id ? result.task : t));
+        if (selectedTask?.id === result.task.id) setSelectedTask(result.task);
+      }
+      toast.success('Attachment removed');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to remove attachment');
+    }
+  };
+
+  const handleBackgroundUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Check file size (limit to 1.5MB for base64 storage efficiency)
+    if (file.size > 1.5 * 1024 * 1024) {
+      toast.error('Image size too large. Please select an image under 1.5MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64String = reader.result as string;
+      const token = localStorage.getItem('token');
+      
+      try {
+        const response = await fetch(`/api/user/theme`, {
+          method: 'POST',
+          headers: { 
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ customBackground: base64String })
+        });
+        
+        if (handleAuthError(response)) {
+          throw new Error('Session expired or invalid. Please log in again.');
+        }
+        
+        if (response.ok) {
+          const updatedUser = await response.json();
+          setUser(updatedUser);
+          toast.success('Background updated successfully');
+        } else {
+          const err = await response.json();
+          throw new Error(err.error || 'Failed to update background');
+        }
+      } catch (error) {
+        console.error('Background upload error:', error);
+        toast.error(error instanceof Error ? error.message : 'Error uploading background');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleStatusUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!statusUpdateTask) return;
+    
+    if (!statusUpdateData.remarks.trim()) {
+      toast.error('Remarks are mandatory for every update');
+      return;
+    }
+
+    if (statusUpdateData.progress === 100 && !statusUpdateData.actualCompletionTime) {
+      toast.error('Please provide the actual completion time');
+      return;
+    }
+
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    const normalizedCompletionTime = statusUpdateData.actualCompletionTime
+      ? (!isNaN(new Date(statusUpdateData.actualCompletionTime).getTime())
+          ? new Date(statusUpdateData.actualCompletionTime).toISOString()
+          : statusUpdateData.actualCompletionTime)
+      : '';
+    const isHold = statusUpdateData.status === 'HOLD';
+    const wasHold = statusUpdateTask.status === 'HOLD';
+    const isResuming = wasHold && statusUpdateData.status !== 'HOLD';
+
+    const payload: any = {
+      status: statusUpdateData.status,
+      progress: statusUpdateData.progress,
+      remarks: statusUpdateData.remarks,
+      actualCompletionTime: normalizedCompletionTime,
+      logs: [
+        ...(statusUpdateTask.logs || []),
+        {
+          id: Date.now().toString(),
+          action: isHold
+            ? `Task placed on Temporary Hold (Reason: ${statusUpdateData.remarks})`
+            : isResuming
+              ? `Task resumed to ${statusUpdateData.status} (${statusUpdateData.progress}%)`
+              : `Status updated to ${statusUpdateData.status} (${statusUpdateData.progress}%)`,
+          timestamp: new Date().toISOString(),
+          user: user?.name || 'System'
+        }
+      ]
+    };
+
+    if (isHold) {
+      payload.currentHoldStartTime = statusUpdateTask.currentHoldStartTime || new Date().toISOString();
+    }
+
+    const targetId = statusUpdateTask.id;
+    const optimisticTask: Task = {
+      ...statusUpdateTask,
+      ...payload
+    };
+
+    // Instant UI Response: close modal and update task immediately
+    setTasks(prev => prev.map(t => t.id === targetId ? optimisticTask : t));
+    if (selectedTask?.id === targetId) {
+      setSelectedTask(optimisticTask);
+    }
+    toast.success(isHold ? 'Task placed on Temporary Hold (Timer frozen)' : isResuming ? 'Task resumed successfully' : 'Task status updated successfully');
+    setIsStatusUpdateModalOpen(false);
+    setStatusUpdateTask(null);
+    setStatusUpdateData({ progress: 0, status: 'RUNNING', remarks: '', actualCompletionTime: '' });
+    setIsLoading(false);
+
+    // Background Async Sync
+    (async () => {
+      try {
+        const data = await fetchJson(`/api/tasks/${targetId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+        if (data && data.id) {
+          setTasks(prev => prev.map(t => t.id === targetId ? data : t));
+          if (selectedTask?.id === targetId) setSelectedTask(data);
+        }
+        Promise.allSettled([
+          fetchStaff(token),
+          fetchPoints(token)
+        ]);
+      } catch (err: any) {
+        console.error('Status update background error:', err);
+        toast.error(err instanceof Error ? err.message : 'Error updating task status on server');
+        fetchTasks(token, true);
+      }
+    })();
+  };
+
+  const formatDateForInput = (dateStr: string | undefined, type: 'date' | 'datetime-local') => {
+    if (!dateStr) return '';
+    if (type === 'date') return dateStr.split('T')[0];
+    if (type === 'datetime-local') {
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+      if (dateStr.includes('T')) return dateStr.slice(0, 16);
+      return `${dateStr}T00:00`;
+    }
+    return dateStr;
+  };
+
+  const isOwnTechnician = () => {
+    if (user?.role !== 'OFFICER') return true;
+    const myId = String(user?.id || '').trim();
+    const myEmpId = String(user?.employeeId || '').trim();
+
+    const isTechMine = (tech: any) => {
+      if (!tech) return false;
+      const techSupId = String(tech.supervisorId || '').trim();
+      if (techSupId && (techSupId === myId || techSupId === myEmpId)) return true;
+      if (Array.isArray(tech.supervisor_ids)) {
+        if (tech.supervisor_ids.some((sid: any) => String(sid).trim() === myId || String(sid).trim() === myEmpId)) return true;
+      }
+      return false;
+    };
+
+    if (newTask.workType === 'SINGLE') {
+      if (!newTask.assignedTo) return true;
+      const tech = staffList.find(s => s.id === newTask.assignedTo || s.name === newTask.assignedTo || s.employeeId === newTask.assignedTo);
+      return isTechMine(tech);
+    } else {
+      if (selectedTechs.length === 0) return true;
+      return selectedTechs.every(st => {
+        const tech = staffList.find(s => s.employeeId === st.employeeId || s.name === st.name || s.id === st.employeeId);
+        return isTechMine(tech);
+      });
+    }
+  };
+
+  const handleTaskSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (user?.role === 'TECHNICIAN') {
+      toast.error('Technicians are not authorized to create or edit tasks.');
+      return;
+    }
+
+    if (!editingTask && user?.role === 'OFFICER' && newTask.workType === 'SINGLE' && !newTask.assignedTo) {
+      toast.error('Please assign the task to someone.');
+      return;
+    }
+
+    if (['HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(user?.role || '') && !editingTask) {
+      // Strict Assignment Rule Validation for all hierarchical roles
+      const assignedStaff = staffList.find(s => s.id === newTask.assignedTo || s.name === newTask.assignedTo || s.employeeId === newTask.assignedTo);
+      if (assignedStaff) {
+        const currentUserData = staffList.find(u => u.id === user?.id) || user;
+        const myEmpId = currentUserData?.employeeId;
+        const myAssignedEngs = currentUserData?.assignedEngineers || [];
+
+        if (currentUserData?.role === 'OFFICER') {
+          // Officer can only assign to Technicians or assigned Authorities
+          if (assignedStaff.role !== 'TECHNICIAN' && !myAssignedEngs.includes(assignedStaff.employeeId)) {
+            toast.error("Access Denied: Officers can only assign tasks to Technicians or their assigned Authorities.");
+            return;
+          }
+          if (assignedStaff.role === 'TECHNICIAN') {
+            const techStat = getTechnicianStatus(assignedStaff.employeeId).status;
+            if (techStat === 'Working') {
+              toast.error(`Technician ${assignedStaff.name} is currently WORKING on an active task. Please select a FREE technician.`);
+              return;
+            }
+          }
+        } else if (currentUserData?.role === 'ENGINEER') {
+          // Engineer can ONLY assign to Officers who have them in assignedEngineers
+          if (assignedStaff.role !== 'OFFICER' || !(assignedStaff.assignedEngineers || []).includes(myEmpId || '')) {
+            toast.error("Access Denied: Engineers can only assign tasks to Officers who are mapped to them.");
+            return;
+          }
+        } else if (['HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER'].includes(currentUserData?.role || '')) {
+          // Hierarchical roles check
+          if (assignedStaff.role === 'OFFICER') {
+            const isAuthorized = ['HOD', 'DHOD'].includes(currentUserData?.role || '') ||
+                                 (assignedStaff.assignedEngineers || []).includes(myEmpId || '') ||
+                                 myAssignedEngs.includes(assignedStaff.employeeId);
+            if (!isAuthorized) {
+              toast.error("Access Denied: You are not authorized to assign tasks to this Officer. (Mapping required)");
+              return;
+            }
+          } else if (assignedStaff.role === 'ENGINEER') {
+            const isAuthorized = ['HOD', 'DHOD'].includes(currentUserData?.role || '') ||
+                                 myAssignedEngs.includes(assignedStaff.employeeId);
+            if (!isAuthorized) {
+              toast.error("Access Denied: You are not authorized to assign tasks to this Engineer.");
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    if (newTask.workType === 'TEAM' && selectedTechs.length < 2) {
+      toast.error('Team work requires at least 2 technicians.');
+      return;
+    }
+
+    const token = localStorage.getItem('token');
+    const isEditing = Boolean(editingTask);
+    const targetTaskId = editingTask?.id;
+    const prevTasks = [...tasks];
+    const clientTimestamp = new Date().toISOString();
+    let tempTaskId = '';
+
+    const url = editingTask ? `/api/tasks/${editingTask.id}` : '/api/tasks';
+    const method = editingTask ? 'PUT' : 'POST';
+    const finalAssignedTo = newTask.assignedTo;
+    const finalWorkType = user?.role === 'ENGINEER' ? 'SINGLE' : newTask.workType;
+
+    const normalizedCustomStartTime = newTask.customStartTime
+      ? (!isNaN(new Date(newTask.customStartTime).getTime())
+          ? new Date(newTask.customStartTime).toISOString()
+          : newTask.customStartTime)
+      : '';
+
+    const payload = editingTask ? {
+      ...newTask,
+      customStartTime: normalizedCustomStartTime,
+      workType: finalWorkType,
+      assignedBy: user?.employeeId,
+      assignedTechnicians: finalWorkType === 'TEAM' ? selectedTechs : undefined,
+      status: editingTask.status || 'PENDING',
+      requestStatus: editingTask.requestStatus
+    } : {
+      ...newTask,
+      customStartTime: normalizedCustomStartTime,
+      workType: finalWorkType,
+      assignedTo: finalAssignedTo,
+      createdBy: user?.employeeId,
+      assignedBy: user?.employeeId,
+      assignedTechnicians: finalWorkType === 'TEAM' ? selectedTechs : undefined,
+    };
+
+    // Instant UI Response: Optimistically update state immediately
+    if (isEditing && editingTask) {
+      const optimisticUpdatedTask: Task = {
+        ...editingTask,
+        ...payload,
+        logs: [
+          ...(editingTask.logs || []),
+          {
+            id: Date.now().toString(),
+            action: `Task updated by ${user?.name || 'User'}`,
+            timestamp: clientTimestamp,
+            user: user?.name || 'User'
+          }
+        ]
+      } as Task;
+      setTasks(prev => prev.map(t => t.id === targetTaskId ? optimisticUpdatedTask : t));
+      if (selectedTask?.id === targetTaskId) setSelectedTask(optimisticUpdatedTask);
+      toast.success('Task updated successfully');
+    } else {
+      tempTaskId = 'temp-' + Date.now();
+      const optimisticNewTask: Task = {
+        id: tempTaskId,
+        taskId: 'TASK-' + Math.floor(1000 + Math.random() * 9000),
+        title: newTask.title,
+        model: newTask.model,
+        details: newTask.details,
+        urgency: (newTask.urgency || 'REGULAR') as Urgency,
+        assignedTo: finalAssignedTo,
+        createdBy: user?.employeeId || '',
+        assignedBy: user?.employeeId || '',
+        status: (finalAssignedTo && user?.role === 'OFFICER') ? 'RUNNING' : 'PENDING',
+        points: newTask.points || 1,
+        deadline: newTask.deadline,
+        createdAt: clientTimestamp,
+        workType: finalWorkType,
+        assignedTechnicians: finalWorkType === 'TEAM' ? selectedTechs : undefined,
+        customStartTime: normalizedCustomStartTime,
+        estimatedDuration: newTask.estimatedDuration,
+        ...payload
+      } as Task;
+      setTasks(prev => [optimisticNewTask, ...prev]);
+      toast.success('Task created successfully');
+    }
+
+    // Immediately close modal & reset fields
+    setIsTaskModalOpen(false);
+    setEditingTask(null);
+    setNewTask({ title: '', model: 'Portable', details: '', urgency: 'REGULAR', assignedTo: '', deadline: '', points: 1, customStartTime: '', estimatedDuration: '', workType: 'SINGLE', assignedTechnicians: [] });
+    setSelectedTechs([]);
+    setIsLoading(false);
+
+    // Background Async Network Sync - Zero UI lag
+    (async () => {
+      try {
+        const result = await fetchJson(url, {
+          method,
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!isEditing && result && result.id) {
+          setTasks(prev => prev.map(t => t.id === tempTaskId ? result : t));
+        } else if (isEditing && result && result.id) {
+          setTasks(prev => prev.map(t => t.id === targetTaskId ? result : t));
+          if (selectedTask?.id === targetTaskId) setSelectedTask(result);
+        }
+
+        Promise.allSettled([
+          fetchStaff(token!),
+          fetchPoints(token!)
+        ]);
+        if (user?.role === 'SUPER_ADMIN') {
+          fetchBackupSettings();
+        }
+      } catch (err: any) {
+        console.error('Task submit background sync error:', err);
+        toast.error(err instanceof Error ? err.message : 'Error syncing task with server');
+        setTasks(prevTasks);
+      }
+    })();
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    if (!taskId) return;
+    
+    const token = localStorage.getItem('token');
+    if (!token) {
+      toast.error('Authentication token missing. Please log in again.');
+      return;
+    }
+    
+    const cleanTargetId = String(taskId).trim();
+    const endpoint = (user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD')
+      ? `/api/admin/tasks/${encodeURIComponent(cleanTargetId)}` 
+      : `/api/tasks/${encodeURIComponent(cleanTargetId)}`;
+
+    // Instant UI Response: Optimistically remove from state immediately
+    const prevTasks = [...tasks];
+    setTasks(prev => prev.filter(t => 
+      String(t.id).trim() !== cleanTargetId && 
+      String(t.taskId).trim() !== cleanTargetId
+    ));
+    setTaskToDelete(null);
+    if (selectedTask?.id === taskId || selectedTask?.taskId === taskId || selectedTask?.id === cleanTargetId || selectedTask?.taskId === cleanTargetId) {
+      setIsTaskDetailsModalOpen(false);
+      setSelectedTask(null);
+    }
+    toast.success('Task deleted successfully');
+    setIsLoading(false);
+
+    // Background Async Deletion
+    (async () => {
+      try {
+        await fetchJson(endpoint, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        Promise.allSettled([
+          fetchStaff(token),
+          fetchPoints(token)
+        ]);
+      } catch (err: any) {
+        console.error('Delete task background error:', err);
+        toast.error(err instanceof Error ? err.message : 'Failed to delete task on server');
+        setTasks(prevTasks);
+      }
+    })();
+  };
+
+  const [activeTaskTab, setActiveTaskTab] = useState<'ALL' | 'PENDING' | 'RUNNING' | 'COMPLETED' | 'Hold Task'>('ALL');
+  const [taskLimit, setTaskLimit] = useState<number>(100);
+
+  const getTaskTechnicianType = (task: Task): 'Hired' | 'Own' => {
+    // 1. Explicit cross-team logs or requested cross-team status
+    const hasCrossTeamLog = Array.isArray(task.logs) && task.logs.some(l => 
+      (l.action || '').toLowerCase().includes('cross-team')
+    );
+    const isRequestedStatus = task.status === 'REQUESTED';
+
+    // 2. Identify the supervising Officer for this task
+    const assigner = staffList.find(s => s.employeeId === task.assignedBy || s.id === task.assignedBy);
+    const creator = staffList.find(s => s.employeeId === task.createdBy || s.id === task.createdBy);
+    
+    const taskOfficer = (assigner && assigner.role === 'OFFICER') 
+      ? assigner 
+      : ((creator && creator.role === 'OFFICER') ? creator : null);
+
+    // Helper to check if a technician belongs to the officer's own team
+    const isTechInOfficerTeam = (tech: any, officer: any): boolean => {
+      if (!tech || !officer) return false;
+      const directMatch = tech.supervisorId === officer.id || tech.supervisorId === officer.employeeId;
+      const multiMatch = Array.isArray(tech.supervisor_ids) && (
+        tech.supervisor_ids.includes(officer.id) || tech.supervisor_ids.includes(officer.employeeId)
+      );
+      return Boolean(directMatch || multiMatch);
+    };
+
+    // 3. If it's a TEAM task
+    if (task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.length > 0) {
+      if (hasCrossTeamLog || isRequestedStatus) return 'Hired';
+      if (taskOfficer) {
+        const hasCrossTech = task.assignedTechnicians.some(at => {
+          const tech = staffList.find(s => s.employeeId === at.employeeId || s.name === at.name || (at as any).id === s.id);
+          return tech && !isTechInOfficerTeam(tech, taskOfficer);
+        });
+        return hasCrossTech ? 'Hired' : 'Own';
+      }
+      return (hasCrossTeamLog || isRequestedStatus) ? 'Hired' : 'Own';
+    }
+
+    // 4. If it's a SINGLE technician task
+    if (task.assignedTo) {
+      const tech = staffList.find(s => 
+        s.id === task.assignedTo || 
+        s.employeeId === task.assignedTo || 
+        (s.name && s.name.toLowerCase().trim() === task.assignedTo.toLowerCase().trim())
+      );
+
+      if (tech && tech.role === 'TECHNICIAN') {
+        if (taskOfficer) {
+          return isTechInOfficerTeam(tech, taskOfficer) ? 'Own' : 'Hired';
+        }
+        return (hasCrossTeamLog || isRequestedStatus) ? 'Hired' : 'Own';
+      }
+    }
+
+    return (hasCrossTeamLog || isRequestedStatus) ? 'Hired' : 'Own';
+  };
+
+  const calculateDuration = (start?: string, end?: string, taskItem?: Task) => {
+    if (taskItem) {
+      const activeMs = getTaskActiveElapsedMs(taskItem, end ? new Date(end) : undefined);
+      const totalMins = Math.floor(activeMs / (1000 * 60));
+      const hours = Math.floor(totalMins / 60);
+      const minutes = totalMins % 60;
+      return `${hours}h ${minutes}m`;
+    }
+    if (!start || !end) return 'N/A';
+    const s = new Date(start);
+    const e = new Date(end);
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) return 'N/A';
+    const diff = Math.max(0, e.getTime() - s.getTime());
+    const totalMins = Math.floor(diff / (1000 * 60));
+    const hours = Math.floor(totalMins / 60);
+    const minutes = totalMins % 60;
+    return `${hours}h ${minutes}m`;
+  };
+
+  const isDelayed = (deadline: string, completedAt?: string) => {
+    if (!completedAt) return new Date() > new Date(deadline);
+    return new Date(completedAt) > new Date(deadline);
+  };
+
+  const formatPhone = (phone: string | undefined) => {
+    if (!phone) return '';
+    const trimmed = phone.trim();
+    if (trimmed && typeof trimmed === 'string' && !trimmed.startsWith('0') && /^\d+$/.test(trimmed)) {
+      return '0' + trimmed;
+    }
+    return trimmed;
+  };
+
+  const handleUpdateTask = async (taskId: string, updates: Partial<Task>) => {
+    const currentTask = tasks.find(t => t.id === taskId);
+    if (!currentTask) return;
+
+    // Mandatory remarks check (except for specific system updates)
+    if (!updates.remarks && user?.role !== 'SUPER_ADMIN' && !updates.assignedTo && !updates.title && !updates.assignedTechnicians) {
+      toast.error('Remarks are mandatory for every update');
+      return;
+    }
+
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    
+    const newLog: TaskLog = {
+      id: Date.now().toString(),
+      action: updates.status ? `Status changed to ${updates.status}` : 
+              updates.assignedTo ? `Assigned to ${staffList.find(s => s.id === updates.assignedTo)?.name || updates.assignedTo}` :
+              updates.assignedTechnicians ? `Team assignment updated` :
+              updates.remarks ? `Remarks updated` : `Task updated`,
+      timestamp: new Date().toISOString(),
+      user: user?.name || 'Unknown'
+    };
+
+    const finalUpdates: any = {
+      ...updates,
+      assignedBy: updates.assignedTo ? user?.employeeId : currentTask.assignedBy,
+      logs: [...(currentTask.logs || []), newLog]
+    };
+
+    // Handle Team Progress
+    if (currentTask.workType === 'TEAM' && updates.assignedTechnicians) {
+      const totalProgress = updates.assignedTechnicians.reduce((sum, t) => sum + (t.progress || 0), 0);
+      finalUpdates.totalTeamProgress = Math.round(totalProgress / updates.assignedTechnicians.length);
+      finalUpdates.progress = finalUpdates.totalTeamProgress;
+      
+      if (updates.assignedTechnicians.every(t => t.status === 'COMPLETED')) {
+        finalUpdates.status = 'COMPLETED';
+        finalUpdates.completedAt = new Date().toISOString();
+      }
+    }
+
+    // Handle cross-team request for Officers
+    if (updates.assignedTo && user?.role === 'OFFICER' && currentTask.workType !== 'TEAM') {
+      const assignee = staffList.find(s => s.id === updates.assignedTo || s.name === updates.assignedTo);
+      if (assignee && assignee.supervisorId !== user.id && assignee.role === 'TECHNICIAN') {
+        finalUpdates.status = 'REQUESTED';
+        finalUpdates.requestStatus = 'PENDING';
+      } else if (assignee && assignee.supervisorId === user.id) {
+        // Direct assignment within team: Start countdown instantly
+        finalUpdates.status = 'RUNNING';
+        finalUpdates.requestStatus = 'APPROVED';
+        finalUpdates.startedAt = new Date().toISOString();
+        finalUpdates.customStartTime = new Date().toISOString();
+      }
+    }
+
+    if (updates.status === 'RUNNING' && !currentTask.startedAt) {
+      finalUpdates.startedAt = new Date().toISOString();
+    }
+
+    // Instant UI Response: Optimistically update state immediately
+    const optimisticTask = {
+      ...currentTask,
+      ...finalUpdates
+    };
+    setTasks(prev => prev.map(t => t.id === taskId ? optimisticTask : t));
+    if (selectedTask?.id === taskId) {
+      setSelectedTask(optimisticTask);
+    }
+    toast.success('Task updated successfully');
+    setIsLoading(false);
+
+    // Background Async Network Sync - Zero UI lag
+    (async () => {
+      try {
+        const updated = await fetchJson(`/api/tasks/${taskId}`, {
+          method: 'PUT',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(finalUpdates)
+        });
+        if (updated && updated.id) {
+          setTasks(prev => prev.map(t => t.id === taskId ? updated : t));
+          if (selectedTask?.id === taskId) setSelectedTask(updated);
+        }
+        Promise.allSettled([
+          fetchStaff(token!),
+          fetchPoints(token!)
+        ]);
+      } catch (err: any) {
+        console.error('Update task background error:', err);
+        toast.error(err instanceof Error ? err.message : 'Error syncing task update');
+        fetchTasks(token!, true);
+      }
+    })();
+  };
+
+  const roles: Role[] = ['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER', 'TECHNICIAN'];
+
+  if (!isLoggedIn) {
+    const titleText = "Daily Work Update";
+    const subtitleText = "(RAC R&I)";
+
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4 font-sans relative overflow-hidden">
+        {/* Full Screen Research/Official Background */}
+        <div className="absolute inset-0 z-0">
+          <img 
+            src="https://images.unsplash.com/photo-1581092160562-40aa08e78837?q=80&w=1920&auto=format&fit=crop" 
+            alt="Research & Engineering Background" 
+            className="w-full h-full object-cover brightness-[0.25] scale-105"
+            referrerPolicy="no-referrer"
+          />
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-900/30 via-transparent to-black/80" />
+          
+          {/* Animated Tech Grid Overlay */}
+          <div className="absolute inset-0 opacity-[0.03] pointer-events-none" 
+               style={{ backgroundImage: 'radial-gradient(#fff 1px, transparent 1px)', backgroundSize: '30px 30px' }} />
+          
+          {/* Floating Particles */}
+          {[...Array(25)].map((_, i) => (
+            <motion.div
+              key={i}
+              className="absolute w-1 h-1 bg-blue-400/20 rounded-full"
+              initial={{ 
+                x: Math.random() * 1920, 
+                y: Math.random() * 1080 
+              }}
+              animate={{ 
+                y: [null, Math.random() * -150],
+                opacity: [0, 0.6, 0],
+                scale: [0, 1.5, 0]
+              }}
+              transition={{ 
+                duration: Math.random() * 7 + 5, 
+                repeat: Infinity, 
+                ease: "easeInOut" 
+              }}
+            />
+          ))}
+        </div>
+
+        <motion.div 
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 1, ease: [0.16, 1, 0.3, 1] }}
+          className="w-full max-w-md relative z-10"
+        >
+          <GlassCard className="p-10 border-white/10 shadow-[0_0_50px_-12px_rgba(59,130,246,0.3)] backdrop-blur-3xl bg-black/40">
+            <div className="text-center mb-10">
+              <motion.div 
+                initial={{ scale: 0, rotate: -180 }}
+                animate={{ scale: 1, rotate: 0 }}
+                transition={{ type: "spring", stiffness: 260, damping: 20, delay: 0.2 }}
+                whileHover={{ scale: 1.1, rotate: 10 }}
+                className="w-24 h-24 bg-gradient-to-br from-blue-600/20 to-cyan-500/20 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-[0_0_30px_-5px_rgba(59,130,246,0.5)] border border-white/10 relative group"
+              >
+                <div className="absolute inset-0 bg-blue-500/10 blur-2xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                <AirVent size={48} className="text-blue-400 relative z-10 drop-shadow-[0_0_10px_rgba(96,165,250,0.5)]" />
+              </motion.div>
+              
+              <h1 className="text-3xl font-black text-white tracking-tight leading-tight mb-2">
+                {titleText.split("").map((char, index) => (
+                  <motion.span
+                    key={index}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ 
+                      delay: 0.5 + (index * 0.05),
+                      duration: 0.2,
+                      ease: "easeOut"
+                    }}
+                    className="inline-block hover:text-blue-400 transition-colors duration-300"
+                  >
+                    {char === " " ? "\u00A0" : char}
+                  </motion.span>
+                ))}
+                <br/>
+                <motion.span 
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.5 + (titleText.length * 0.05) + 0.3, duration: 0.5 }}
+                  className="bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent font-bold text-2xl"
+                >
+                  {subtitleText}
+                </motion.span>
+              </h1>
+              <p className="text-gray-500 mt-4 text-xs font-bold uppercase tracking-[0.3em] opacity-60">Secure Research Access</p>
+            </div>
+
+            <form onSubmit={handleLogin} className="space-y-6">
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">HRMS ID</label>
+                <div className="relative group">
+                  <motion.input 
+                    animate={{ 
+                      scale: loginData.employeeId.length > 0 ? [1, 1.01, 1] : 1,
+                      borderColor: loginColors.id,
+                      color: loginColors.id
+                    }}
+                    transition={{ duration: 0.1 }}
+                    type="text" 
+                    value={loginData.employeeId}
+                    onChange={handleIdChange}
+                    className="w-full bg-white/[0.03] border rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all placeholder:text-gray-700"
+                    placeholder="Enter HRMS ID / Email"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">Security Key</label>
+                <div className="relative group">
+                  <motion.input 
+                    animate={{ 
+                      scale: loginData.password.length > 0 ? [1, 1.01, 1] : 1,
+                      borderColor: loginColors.pw,
+                      color: loginColors.pw
+                    }}
+                    transition={{ duration: 0.1 }}
+                    type={showPassword ? "text" : "password"} 
+                    value={loginData.password}
+                    onChange={handlePwChange}
+                    className="w-full bg-white/[0.03] border rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all placeholder:text-gray-700 pr-12"
+                    placeholder="••••••••"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-blue-400 transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
+                </div>
+              </div>
+              
+              <motion.button 
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-black py-4 rounded-2xl transition-all shadow-xl shadow-blue-500/20 flex items-center justify-center gap-3 mt-8"
+              >
+                {isLoading ? (
+                  <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <span>ACCESS DASHBOARD</span>
+                    <ChevronRight size={20} />
+                  </>
+                )}
+              </motion.button>
+            </form>
+
+            <div className="mt-10 pt-8 border-t border-white/5 flex flex-col items-center justify-center gap-1 opacity-30 grayscale hover:grayscale-0 transition-all duration-500">
+              <div className="text-[10px] font-bold text-gray-400 tracking-tight">Software Development by Jahid RAC R&I (38250)</div>
+              <div className="text-[9px] text-gray-500 uppercase tracking-widest">Version Release : 1.1.24</div>
+            </div>
+          </GlassCard>
+        </motion.div>
+      </div>
+    );
+  }
+
+  const models = ['Portable', '9K', '12K', '18K', '24K', '30K', '36K', 'Store Related Work', 'Chemical & Polymer', 'Cleaning Work', 'General Work', 'Others Work'];
+  const urgencies = ['REGULAR', 'URGENT', 'MOST_URGENT'];
+
+  const getAnalyticsData = (targetMonth: string = analyticsMonth) => {
+    const isAll = !targetMonth || targetMonth === 'ALL';
+    const activeMonth = isAll ? null : targetMonth;
+
+    // Filter tasks for the selected analytics month
+    const analyticsTasks = tasks.filter(t => {
+      if (!activeMonth) return true;
+      const m1 = (t.createdAt || '').slice(0, 7);
+      const m2 = (t.deadline || '').slice(0, 7);
+      const m3 = (t.completedAt || '').slice(0, 7);
+      return m1 === activeMonth || m2 === activeMonth || m3 === activeMonth;
+    });
+
+    // 7-day trend scoped to selected period
+    const trend = Array.from({ length: 7 }).map((_, i) => {
+      const date = new Date();
+      if (activeMonth) {
+        const [y, m] = activeMonth.split('-').map(Number);
+        const now = new Date();
+        const isCurrentCalMonth = (now.getFullYear() === y && (now.getMonth() + 1) === m);
+        if (isCurrentCalMonth) {
+          date.setDate(date.getDate() - (6 - i));
+        } else {
+          const lastDay = new Date(y, m, 0).getDate();
+          date.setFullYear(y, m - 1, Math.max(1, lastDay - 6 + i));
+        }
+      } else {
+        date.setDate(date.getDate() - (6 - i));
+      }
+      const dateStr = date.toLocaleDateString('en-US', { weekday: 'short' });
+      
+      const dayTasks = analyticsTasks.filter(t => {
+        const taskDate = new Date(t.completedAt || t.createdAt);
+        return taskDate.toDateString() === date.toDateString();
+      });
+
+      return {
+        name: dateStr,
+        completed: dayTasks.filter(t => t.status === 'COMPLETED').length,
+        pending: dayTasks.filter(t => t.status !== 'COMPLETED').length
+      };
+    });
+
+    const allOfficers = staffList
+      .filter(s => s.role === 'OFFICER')
+      .map(s => {
+        const pts = getValidOfficerPoints(s.employeeId, activeMonth || 'ALL');
+        const cnt = getValidOfficerTaskCount(s.employeeId, activeMonth || 'ALL');
+        return {
+          id: s.id,
+          employeeId: s.employeeId,
+          name: s.name,
+          designation: s.designation || 'Officer',
+          points: pts,
+          count: cnt,
+          isCurrentUser: Boolean(user && (user.id === s.id || user.employeeId === s.employeeId))
+        };
+      })
+      .filter(s => s.points > 0 || s.count > 0)
+      .sort((a, b) => b.points - a.points || b.count - a.count);
+
+    const topOfficersForChart = allOfficers.slice(0, 10);
+
+    const topTechnicians = staffList
+      .filter(s => s.role === 'TECHNICIAN')
+      .map(s => {
+        const techTasks = analyticsTasks.filter(t => {
+          if (t.workType === 'TEAM') {
+            return t.assignedTechnicians?.some(at => at.employeeId === s.employeeId) && t.status === 'COMPLETED';
+          }
+          return (t.assignedTo === s.employeeId || t.assignedTo === s.id || t.assignedTo === s.name) && t.status === 'COMPLETED';
+        });
+        return {
+          name: s.name,
+          tasks: techTasks.length
+        };
+      })
+      .filter(s => s.tasks > 0)
+      .sort((a, b) => b.tasks - a.tasks)
+      .slice(0, 10);
+
+    const modelDistribution = models.map(m => ({
+      name: m,
+      value: analyticsTasks.filter(t => t.model === m).length
+    })).filter(m => m.value > 0);
+
+    const totalMonthTasks = analyticsTasks.length;
+    const completedMonthTasks = analyticsTasks.filter(t => t.status === 'COMPLETED').length;
+    const pendingMonthTasks = analyticsTasks.filter(t => t.status !== 'COMPLETED').length;
+    const totalVerifiedPoints = allOfficers.reduce((acc, o) => acc + o.points, 0);
+
+    return { 
+      trend, 
+      topOfficers: allOfficers, 
+      topOfficersForChart, 
+      topTechnicians, 
+      modelDistribution,
+      summary: {
+        totalTasks: totalMonthTasks,
+        completedTasks: completedMonthTasks,
+        pendingTasks: pendingMonthTasks,
+        totalPoints: totalVerifiedPoints,
+        activeOfficers: allOfficers.length
+      }
+    };
+  };
+
+  const { trend, topOfficers, topOfficersForChart, topTechnicians, modelDistribution, summary: analyticsSummary } = getAnalyticsData(analyticsMonth);
+  
+
+  const isTechnicianAvailable = (techId: string) => {
+    const tech = staffList.find(s => s.employeeId === techId || s.id === techId);
+    if (tech && (tech.status === 'ON_LEAVE' || tech.status === 'SHORT_LEAVE' || tech.status === 'SHIFT_OFF')) {
+      return false;
+    }
+
+    const attRec = getTodayAttendanceRecord(techId);
+    const status = attRec?.status || (tech ? getStaffAttendanceStatus(tech) : 'PRESENT');
+    
+    // If on Leave, Short-Leave, or Absent, they are NOT available
+    if (status === 'LEAVE' || status === 'SHORT_LEAVE' || status === 'ABSENT') return false;
+    
+    // If Present, they are available (standard shift)
+    if (status === 'PRESENT') return true;
+
+    const currentHour = new Date().getHours();
+    
+    // Shifting Duty (Shift A: 6 AM – 2 PM)
+    if (status === 'SHIFT_A' || (status as any) === 'SHIFT_6_2') {
+      return currentHour >= 6 && currentHour < 14;
+    }
+    
+    // Shifting Duty (Shift B: 2 PM – 10 PM)
+    if (status === 'SHIFT_B' || (status as any) === 'SHIFT_2_6') {
+      return currentHour >= 14 && currentHour < 22;
+    }
+
+    return false;
+  };
+
+  // Rule: If a technician is in leave status (LEAVE), or short-leave (SHORT_LEAVE), or outside their shift time (SHIFT_A/SHIFT_B/SHIFT_OFF),
+  // they are COMPLETELY REMOVED from Active Technician Monitoring
+  const isTechnicianActiveForMonitoring = (tech: User): boolean => {
+    if (tech.role !== 'TECHNICIAN') return false;
+
+    // 1. Check user status flags
+    if (tech.status === 'ON_LEAVE' || tech.status === 'SHORT_LEAVE' || tech.status === 'SHIFT_OFF') {
+      return false;
+    }
+
+    // 2. Check attendance record for today
+    const attendanceStatus = getStaffAttendanceStatus(tech);
+    if (attendanceStatus === 'LEAVE' || attendanceStatus === 'SHORT_LEAVE' || attendanceStatus === 'ABSENT') {
+      return false;
+    }
+
+    const currentHour = new Date().getHours();
+    if (attendanceStatus === 'SHIFT_A' || (attendanceStatus as any) === 'SHIFT_6_2') {
+      // Shift A: 6 AM – 2 PM (6:00 - 14:00)
+      if (currentHour < 6 || currentHour >= 14) return false;
+    }
+    if (attendanceStatus === 'SHIFT_B' || (attendanceStatus as any) === 'SHIFT_2_6') {
+      // Shift B: 2 PM – 10 PM (14:00 - 22:00)
+      if (currentHour < 14 || currentHour >= 22) return false;
+    }
+
+    return true;
+  };
+
+  const getTechnicianStatus = (techId: string) => {
+    const tech = staffList.find(s => s.employeeId === techId || s.id === techId);
+    if (!tech) return { status: 'Free', color: 'text-emerald-400', bg: 'bg-emerald-400/10', task: null };
+
+    const techTasks = tasks.filter(t => {
+      // Completed, rejected, cancelled, requested, or pending tasks are not active working tasks
+      if (t.status === 'COMPLETED' || t.status === 'REJECTED' || t.status === 'REQUESTED' || t.status === 'PENDING' || (t as any).status === 'CANCELLED') return false;
+
+      const techName = (tech.name || '').toLowerCase();
+      const assignedTo = (t.assignedTo || '').toLowerCase();
+      if (assignedTo === techName || t.assignedTo === tech.id || t.assignedTo === tech.employeeId) return true;
+      // Also check assignedTechnicians for team tasks
+      if (t.assignedTechnicians && Array.isArray(t.assignedTechnicians)) {
+        return t.assignedTechnicians.some((at: any) => at.employeeId === techId || at.id === tech.id || (at.name && tech.name && at.name.toLowerCase() === tech.name.toLowerCase()));
+      }
+      return false;
+    });
+
+    const activeTask = techTasks.find(t => t.status === 'RUNNING' || t.status === 'DELAYED' || t.status === 'HOLD');
+    
+    // Check leave / shift off statuses from attendance or user record
+    const attStatus = getStaffAttendanceStatus(tech);
+    if (tech.status === 'ON_LEAVE' || attStatus === 'LEAVE' || attStatus === 'ABSENT') {
+      return { status: 'On Leave', color: 'text-red-400', bg: 'bg-red-400/10', task: null };
+    }
+    if (tech.status === 'SHORT_LEAVE' || attStatus === 'SHORT_LEAVE') {
+      return { status: 'Short Leave', color: 'text-purple-400', bg: 'bg-purple-400/10', task: null };
+    }
+    if (tech.status === 'SHIFT_OFF' || !isTechnicianAvailable(tech.employeeId)) {
+      return { status: 'Shift Off', color: 'text-gray-500', bg: 'bg-gray-500/10', task: null };
+    }
+
+    // ONLY when task is actually assigned and active, show as 'Working'
+    if (activeTask) {
+      return { 
+        status: 'Working', 
+        color: 'text-green-400', 
+        bg: 'bg-green-400/10', 
+        task: activeTask 
+      };
+    }
+
+    // All remaining technicians show as 'Free'
+    return { status: 'Free', color: 'text-emerald-400', bg: 'bg-emerald-400/10', task: null };
+  };
+
+  const getThemeStyles = () => {
+    switch (user?.theme) {
+      case 'light': return 'bg-[#f8fafc] text-slate-900';
+      case 'blue': return 'bg-[#0f172a] text-white';
+      case 'purple': return 'bg-[#1e1b4b] text-white';
+      case 'green': return 'bg-[#064e3b] text-white';
+      case 'red': return 'bg-[#450a0a] text-white';
+      case 'gold': return 'bg-[#451a03] text-white';
+      default: return 'bg-[#0a0a0c] text-white';
+    }
+  };
+
+  const renderTechnicianCard = (tech: User) => {
+    const statusInfo = getTechnicianStatus(tech.employeeId);
+    const isAvailable = isTechnicianAvailable(tech.employeeId);
+
+    return (
+      <GlassCard key={tech.id} className={cn("relative overflow-hidden group", !isAvailable && "opacity-60")}>
+        {!isAvailable && (
+          <div className="absolute top-0 right-0 px-3 py-1 bg-red-500/20 text-red-500 text-[10px] font-black uppercase tracking-widest rounded-bl-xl">
+            Off-Duty / Absent
+          </div>
+        )}
+        
+        <div className="flex items-start gap-4 mb-6">
+          <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-white/10 bg-white/5 flex items-center justify-center text-xl font-bold">
+            {tech.avatar ? (
+              <img src={tech.avatar} alt={tech.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            ) : (
+              tech.name[0]
+            )}
+          </div>
+          <div className="flex-1">
+            <h3 className="font-bold text-lg">{tech.name}</h3>
+            <p className="text-xs text-gray-500">{tech.employeeId}</p>
+            <div className="mt-2">
+              <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider", statusInfo.bg, statusInfo.color)}>
+                <Activity size={10} />
+                {statusInfo.status}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Current Assignment</h4>
+              {statusInfo.task && (
+                <span className="text-[10px] font-bold text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded-full">
+                  {statusInfo.task.progress || 0}%
+                </span>
+              )}
+            </div>
+            {statusInfo.task ? (
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-bold text-white line-clamp-1">{statusInfo.task.title}</p>
+                  <div className="flex items-center gap-3 text-[10px] text-gray-400 mt-1">
+                    <span className="flex items-center gap-1"><Clock size={10} /> {statusInfo.task.model}</span>
+                    <span className="flex items-center gap-1"><TrendingUp size={10} /> {statusInfo.task.urgency}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[9px] text-gray-500 uppercase tracking-tighter">
+                    <span>Progress</span>
+                    <span>{statusInfo.task.progress || 0}%</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${statusInfo.task.progress || 0}%` }}
+                      className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-white/5">
+                  <CountdownTimer task={statusInfo.task} />
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-600 italic">No active tasks assigned</p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            {tech.phone ? (
+              <a 
+                href={`tel:${formatPhone(tech.phone)}`}
+                className="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all"
+              >
+                <Phone size={14} className="text-blue-400" />
+                Contact
+              </a>
+            ) : (
+              <div className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center gap-2 text-xs font-bold opacity-50 cursor-not-allowed">
+                <Phone size={14} className="text-gray-500" />
+                No Number
+              </div>
+            )}
+            {['OFFICER', 'SUPER_ADMIN', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER'].includes(user?.role || '') && statusInfo.status === 'Free' && isAvailable && (
+              <button 
+                onClick={() => {
+                  setNewTask({ ...newTask, assignedTo: tech.id, workType: 'SINGLE', assignedTechnicians: [] });
+                  setSelectedTechs([]);
+                  setIsTaskModalOpen(true);
+                }}
+                className={cn(
+                  "flex-1 py-3 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all shadow-lg",
+                  tech.supervisorId && tech.supervisorId !== user?.id && tech.supervisorId !== user?.employeeId
+                    ? "bg-amber-600 hover:bg-amber-700 text-white shadow-amber-500/20"
+                    : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20"
+                )}
+                title={tech.supervisorId && tech.supervisorId !== user?.id && tech.supervisorId !== user?.employeeId ? "Request from other team" : "Assign to own team"}
+              >
+                <Plus size={14} />
+                {tech.supervisorId && tech.supervisorId !== user?.id && tech.supervisorId !== user?.employeeId ? 'Request Tech' : 'Assign'}
+              </button>
+            )}
+          </div>
+        </div>
+      </GlassCard>
+    );
+  };
+
+  return (
+    <ThemeContext.Provider value={user?.theme || 'dark'}>
+    <TaskTimerContext.Provider value={{
+      attendanceRecords: attendance,
+      overtimeRequests,
+      shiftAssignments,
+      shifts,
+      technicians: staffList,
+      userRole: user?.role,
+      onOpenOvertime: setSelectedOvertimeTask,
+      onOpenExtension: setSelectedExtensionTask
+    }}>
+    <div 
+      className={cn(
+        "min-h-screen font-sans flex overflow-hidden transition-all duration-500",
+        getThemeStyles(),
+        user?.theme === 'light' ? "selection:bg-blue-100" : "selection:bg-blue-500/30"
+      )}
+      style={user?.customBackground ? {
+        backgroundImage: `url(${user.customBackground})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundAttachment: 'fixed'
+      } : {}}
+    >
+      {user?.customBackground && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-[2px] z-0 pointer-events-none" />
+      )}
+      <div className="relative z-10 flex w-full overflow-hidden">
+          {/* Quality Rating Modal */}
+          <AnimatePresence>
+            {showQualityModal && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  className="w-full max-w-sm"
+                >
+                  <GlassCard className="p-8 text-center">
+                    <div className="w-16 h-16 bg-green-500/20 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                      <CheckCircle size={32} />
+                    </div>
+                    <h3 className="text-xl font-bold mb-2">Rate Work Quality</h3>
+                    <p className="text-gray-400 text-sm mb-8">Please rate the quality of this task (1-5) to complete it.</p>
+                    
+                    <div className="flex justify-center gap-4 mb-8">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button
+                          key={star}
+                          onClick={() => setTaskQuality(star)}
+                          className={cn(
+                            "w-10 h-10 rounded-full flex items-center justify-center font-bold transition-all",
+                            taskQuality >= star ? "bg-amber-500 text-white" : "bg-white/5 text-gray-500"
+                          )}
+                        >
+                          {star}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex gap-3">
+                      <button 
+                        onClick={() => setShowQualityModal(null)}
+                        className="flex-1 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button 
+                        onClick={async () => {
+                          await handleUpdateTask(showQualityModal, { 
+                            status: 'COMPLETED', 
+                            progress: 100, 
+                            completedAt: new Date().toISOString(),
+                            quality: taskQuality
+                          });
+                          setShowQualityModal(null);
+                          setTaskQuality(5);
+                        }}
+                        className="flex-1 py-3 bg-green-600 hover:bg-green-700 rounded-xl font-bold transition-all"
+                      >
+                        Complete
+                      </button>
+                    </div>
+                  </GlassCard>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
+          {/* Distribute Task Modal */}
+          <AnimatePresence>
+            {showDistributeModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="w-full max-w-md bg-[#1a1a1f] border border-white/10 rounded-3xl overflow-hidden shadow-2xl"
+                >
+                  <div className="p-6 border-b border-white/10 flex items-center justify-between bg-blue-600/10">
+                    <h2 className="text-xl font-bold flex items-center gap-2">
+                      <Wrench className="text-blue-400" /> Distribute Task
+                    </h2>
+                    <button onClick={() => setShowDistributeModal(null)} className="p-2 hover:bg-white/10 rounded-full transition-all">
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                    <p className="text-sm text-gray-400">Select a technician to assign this task. The task will automatically start (RUNNING status) once assigned.</p>
+                    
+                    <div className="flex gap-2 p-1 bg-white/5 rounded-xl border border-white/10">
+                      <button 
+                        onClick={() => setDistributeWorkType('SINGLE')}
+                        className={cn(
+                          "flex-1 py-2 rounded-lg text-xs font-bold transition-all",
+                          distributeWorkType === 'SINGLE' ? "bg-blue-600 text-white" : "text-gray-400 hover:bg-white/5"
+                        )}
+                      >
+                        Single Work
+                      </button>
+                      <button 
+                        onClick={() => setDistributeWorkType('TEAM')}
+                        className={cn(
+                          "flex-1 py-2 rounded-lg text-xs font-bold transition-all",
+                          distributeWorkType === 'TEAM' ? "bg-blue-600 text-white" : "text-gray-400 hover:bg-white/5"
+                        )}
+                      >
+                        Team Work
+                      </button>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-400 mb-2">Search Technician</label>
+                      <div className="relative">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+                        <input
+                          type="text"
+                          value={techSearch}
+                          onChange={(e) => setTechSearch(e.target.value)}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                          placeholder="Search by ID or Name..."
+                        />
+                      </div>
+                      
+                      {techSearch && (
+                        <div className="mt-2 max-h-40 overflow-y-auto bg-[#0f0f12] border border-white/10 rounded-xl p-2 space-y-1 custom-scrollbar">
+                          {staffList
+                            .filter(s => s.role === 'TECHNICIAN')
+                            .filter(s => 
+                              s.name.toLowerCase().includes(techSearch.toLowerCase()) || 
+                              s.employeeId.toString().includes(techSearch)
+                            )
+                            .map(s => (
+                              <button
+                                key={s.id}
+                                onClick={() => {
+                                  if (distributeWorkType === 'SINGLE') {
+                                    setSelectedTechs([{ employeeId: s.employeeId, name: s.name }]);
+                                  } else {
+                                    if (!selectedTechs.find(t => t.employeeId === s.employeeId)) {
+                                      setSelectedTechs([...selectedTechs, { employeeId: s.employeeId, name: s.name }]);
+                                    }
+                                  }
+                                  setTechSearch('');
+                                }}
+                                className="w-full text-left px-4 py-2 hover:bg-white/5 rounded-lg text-sm flex items-center justify-between group"
+                              >
+                                <span>{s.name} ({s.employeeId})</span>
+                                <Plus size={14} className="text-blue-400 opacity-0 group-hover:opacity-100 transition-all" />
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {selectedTechs.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {selectedTechs.map(tech => (
+                          <div key={tech.employeeId} className="flex items-center gap-2 bg-blue-500/20 text-blue-400 px-3 py-1 rounded-full text-xs border border-blue-500/30">
+                            <span>{tech.name}</span>
+                            <button onClick={() => setSelectedTechs(selectedTechs.filter(t => t.employeeId !== tech.employeeId))}>
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <button 
+                      onClick={async () => {
+                        if (selectedTechs.length === 0) return;
+                        
+                        const updateData: any = {
+                          status: 'RUNNING',
+                          startedAt: new Date().toISOString(),
+                          workType: distributeWorkType
+                        };
+
+                        if (distributeWorkType === 'SINGLE') {
+                          updateData.assignedTo = selectedTechs[0].name;
+                          updateData.assignedTechnicians = [selectedTechs[0]];
+                        } else {
+                          updateData.assignedTo = selectedTechs.map(t => t.name).join(', ');
+                          updateData.assignedTechnicians = selectedTechs;
+                        }
+
+                        await handleUpdateTask(showDistributeModal, updateData);
+                        setShowDistributeModal(null);
+                        setSelectedTechs([]);
+                        setTechSearch('');
+                      }}
+                      disabled={selectedTechs.length === 0 || isLoading}
+                      className="w-full py-3 bg-blue-600 rounded-xl font-bold hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isLoading ? 'Assigning...' : 'Confirm Assignment'}
+                    </button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
+      {/* Task Deletion Confirmation Modal */}
+      <AnimatePresence>
+        {taskToDelete && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="w-full max-w-sm"
+            >
+              <GlassCard className="p-8 text-center border-red-500/30">
+                <div className="w-16 h-16 bg-red-500/20 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <AlertCircle size={32} />
+                </div>
+                <h3 className="text-xl font-bold mb-2">Delete Task?</h3>
+                <p className="text-gray-400 text-sm mb-8">Are you sure you want to delete this task? This action cannot be undone.</p>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => setTaskToDelete(null)}
+                    className="flex-1 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={() => handleDeleteTask(taskToDelete)}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-700 rounded-xl font-bold transition-all"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Confirmation Modal */}
+      <AnimatePresence>
+        {staffToDelete && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="w-full max-w-sm"
+            >
+              <GlassCard className="p-8 text-center border-red-500/30">
+                <div className="w-16 h-16 bg-red-500/20 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <AlertCircle size={32} />
+                </div>
+                <h3 className="text-xl font-bold mb-2">Confirm Deletion</h3>
+                <p className="text-gray-400 text-sm mb-8">Are you sure you want to remove this staff member? This action cannot be undone.</p>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => setStaffToDelete(null)}
+                    className="flex-1 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={() => handleDeleteStaff(staffToDelete)}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-700 rounded-xl font-bold transition-all"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Profile View Modal */}
+      <AnimatePresence>
+        {viewingStaff && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="w-full max-w-md"
+            >
+              <GlassCard className="p-8">
+                <div className="flex justify-end mb-4">
+                  <button onClick={() => setViewingStaff(null)} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                    <X size={24} />
+                  </button>
+                </div>
+                <div className="flex flex-col items-center text-center">
+                  <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-blue-600/30 mb-6 bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-4xl font-bold">
+                    {viewingStaff.avatar ? (
+                      <img src={viewingStaff.avatar} alt={viewingStaff.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      viewingStaff.name[0]
+                    )}
+                  </div>
+                  <h2 className="text-3xl font-bold">{viewingStaff.name}</h2>
+                  <p className="text-blue-400 font-mono mt-1">{viewingStaff.employeeId}</p>
+                  <div className="mt-2 px-3 py-1 bg-blue-600/20 text-blue-400 text-xs font-bold rounded-full uppercase tracking-widest">
+                    {viewingStaff.role.replace('_', ' ')}
+                  </div>
+                  {viewingStaff.designation && (
+                    <p className="text-gray-400 mt-2 italic">{viewingStaff.designation}</p>
+                  )}
+                  
+                  <div className="w-full space-y-3 mt-8">
+                    <div className="flex items-center gap-3 bg-white/5 p-3 rounded-xl border border-white/5">
+                      <div className="p-2 bg-blue-600/20 rounded-lg text-blue-400">
+                        <Phone size={18} />
+                      </div>
+                      <div className="text-left">
+                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Mobile Number</p>
+                        <p className="text-sm font-medium">{formatPhone(viewingStaff.phone) || 'N/A'}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 bg-white/5 p-3 rounded-xl border border-white/5">
+                      <div className="p-2 bg-purple-600/20 rounded-lg text-purple-400">
+                        <FileText size={18} />
+                      </div>
+                      <div className="text-left">
+                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Email</p>
+                        <p className="text-sm font-medium">{viewingStaff.email || 'N/A'}</p>
+                      </div>
+                    </div>
+
+                    {viewingStaff.role === 'OFFICER' && viewingStaff.assignedEngineers && viewingStaff.assignedEngineers.length > 0 && (
+                      <div className="flex flex-col gap-3 bg-white/5 p-3 rounded-xl border border-white/5">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-green-600/20 rounded-lg text-green-400">
+                            <Users size={18} />
+                          </div>
+                          <div className="text-left">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider">Assigned Engineers</p>
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              {viewingStaff.assignedEngineers.map(engId => {
+                                const eng = staffList.find(s => s.employeeId === engId);
+                                return (
+                                  <span key={engId} className="px-2 py-0.5 bg-green-600/20 text-green-400 text-[10px] font-bold rounded-full border border-green-600/30">
+                                    {eng ? eng.name : engId}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="w-full grid grid-cols-2 gap-4 mt-4">
+                    <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Department</p>
+                      <p className="font-bold">{viewingStaff.department || 'RAC R&I'}</p>
+                    </div>
+                    <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Status</p>
+                      <p className="font-bold text-green-400">Active</p>
+                    </div>
+                  </div>
+
+                  {viewingStaff.role === 'OFFICER' && canViewPoints && (
+                    <div className="w-full mt-6 space-y-4">
+                      <div className="bg-blue-600/10 border border-blue-500/20 p-6 rounded-3xl text-center">
+                        <p className="text-xs text-blue-400 uppercase tracking-widest mb-2 font-bold">Total Performance Points</p>
+                        <div className="flex items-center justify-center gap-4">
+                          {isEditingPoints ? (
+                            <div className="flex items-center gap-2">
+                              <input 
+                                type="number" 
+                                value={newPointValue}
+                                onChange={(e) => setNewPointValue(parseInt(e.target.value) || 0)}
+                                className="bg-white/10 border border-white/20 rounded-lg px-3 py-1 w-32 text-center text-2xl font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              />
+                              <button 
+                                onClick={() => handleAdjustPoints(viewingStaff.id, 'EDIT', newPointValue)}
+                                className="p-2 bg-green-500/20 text-green-400 rounded-lg hover:bg-green-500/30 transition-all"
+                                title="Save"
+                              >
+                                <CheckCircle2 size={20} />
+                              </button>
+                              <button 
+                                onClick={() => setIsEditingPoints(false)}
+                                className="p-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition-all"
+                                title="Cancel"
+                              >
+                                <X size={20} />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-5xl font-black text-white tracking-tighter">
+                                {getValidOfficerPoints(viewingStaff.id)}
+                              </p>
+                              {user?.role === 'SUPER_ADMIN' && (
+                                <div className="flex gap-2">
+                                  <button 
+                                    onClick={() => {
+                                      setNewPointValue(getValidOfficerPoints(viewingStaff.id));
+                                      setIsEditingPoints(true);
+                                    }}
+                                    className="p-1.5 bg-white/5 text-gray-400 rounded-lg hover:bg-white/10 hover:text-blue-400 transition-all"
+                                    title="Edit Points"
+                                  >
+                                    <Edit2 size={14} />
+                                  </button>
+                                  <button 
+                                    onClick={() => handleAdjustPoints(viewingStaff.id, 'RESET')}
+                                    className="p-1.5 bg-white/5 text-gray-400 rounded-lg hover:bg-white/10 hover:text-red-400 transition-all"
+                                    title="Reset/Recalculate Points"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                        <div className="mt-4 grid grid-cols-2 gap-2">
+                          <div className="bg-white/5 p-2 rounded-xl">
+                            <p className="text-[10px] text-gray-500 uppercase">Task Point (This Month)</p>
+                            <p className="text-lg font-bold">
+                              {calculatePerformance(viewingStaff).totalPoints}
+                            </p>
+                          </div>
+                          <div className="bg-white/5 p-2 rounded-xl">
+                            <p className="text-[10px] text-gray-500 uppercase">Total Task Completed (This Month)</p>
+                            <p className="text-lg font-bold">
+                              {calculatePerformance(viewingStaff).totalCompleted}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <p className="text-xs text-gray-500 uppercase tracking-wider font-bold px-2">Recent Point History</p>
+                        <div className="max-h-40 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                          {pointTransactions
+                            .filter(pt => pt.officerId === viewingStaff.id)
+                            .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())
+                            .slice(0, 10)
+                            .map(pt => {
+                              const task = tasks.find(t => t.id === pt.taskId);
+                              return (
+                                  <div key={pt.id} className="flex items-center justify-between bg-white/5 p-3 rounded-xl border border-white/5">
+                                    <div className="text-left">
+                                      <p className="text-xs font-bold truncate max-w-[150px]">{task?.title || 'Unknown Task'}</p>
+                                      <p className="text-[10px] text-gray-500">{new Date(pt.completedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <div className="px-2 py-1 bg-green-500/20 text-green-400 text-xs font-bold rounded-lg">
+                                        +{pt.pointValue}
+                                      </div>
+                                      {user?.role === 'SUPER_ADMIN' && (
+                                        <div className="flex items-center gap-1">
+                                          <button 
+                                            onClick={() => handleEditTaskPoint(pt.taskId, pt.pointValue)}
+                                            className="p-1 hover:bg-white/10 rounded text-blue-400 transition-colors"
+                                            title="Edit Points"
+                                          >
+                                            <Edit2 size={12} />
+                                          </button>
+                                          {pt.taskId && pt.taskId !== 'MANUAL_ADJUSTMENT' && (
+                                            <button 
+                                              onClick={() => setTaskToDelete(pt.taskId)}
+                                              className="p-1 hover:bg-white/10 rounded text-red-400 transition-colors"
+                                              title="Delete Task"
+                                            >
+                                              <Trash2 size={12} />
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                              );
+                            })}
+                          {pointTransactions.filter(pt => pt.officerId === viewingStaff.id).length === 0 && (
+                            <p className="text-xs text-gray-500 italic text-center py-4">No point history available</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  <button 
+                    onClick={() => setViewingStaff(null)}
+                    className="w-full mt-8 py-4 bg-blue-600 hover:bg-blue-700 rounded-xl font-bold transition-all shadow-lg shadow-blue-500/30"
+                  >
+                    Close Profile
+                  </button>
+                </div>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Staff Modal */}
+      <AnimatePresence>
+        {isStaffModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="w-full max-w-md"
+            >
+              <GlassCard className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <h2 className="text-2xl font-bold">{editingStaff ? 'Edit Staff' : 'Add New Staff'}</h2>
+                  <button onClick={() => { setIsStaffModalOpen(false); setEditingStaff(null); }} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                    <X size={24} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleStaffSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Employee ID</label>
+                    <input 
+                      type="text" 
+                      value={newStaff.employeeId}
+                      onChange={(e) => setNewStaff({...newStaff, employeeId: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. TECH005"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Full Name</label>
+                    <input 
+                      type="text" 
+                      value={newStaff.name}
+                      onChange={(e) => setNewStaff({...newStaff, name: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. John Doe"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Profile Picture</label>
+                    <div className="flex items-center gap-4">
+                      <div className="w-16 h-16 rounded-full overflow-hidden border border-white/10 bg-white/5 flex items-center justify-center text-xl font-bold">
+                        {newStaff.avatar ? (
+                          <img src={newStaff.avatar} alt="Preview" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <UserCircle size={32} className="text-gray-600" />
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <label className="cursor-pointer bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-2 text-sm font-bold transition-all inline-block">
+                          Choose File
+                          <input 
+                            type="file" 
+                            accept="image/*"
+                            onChange={handleFileChange}
+                            className="hidden"
+                          />
+                        </label>
+                        <p className="text-[10px] text-gray-500 mt-1">JPG, PNG or GIF. Max 1MB.</p>
+                      </div>
+                      {newStaff.avatar && (
+                        <button 
+                          type="button"
+                          onClick={() => setNewStaff({...newStaff, avatar: ''})}
+                          className="text-red-500 text-xs hover:underline"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Designation (Optional)</label>
+                    <input 
+                      type="text" 
+                      value={newStaff.designation}
+                      onChange={(e) => setNewStaff({...newStaff, designation: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. Senior Technician"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Email (Optional)</label>
+                    <input 
+                      type="email" 
+                      value={newStaff.email}
+                      onChange={(e) => setNewStaff({...newStaff, email: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. john@example.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Contact Number (Optional)</label>
+                    <input 
+                      type="tel" 
+                      value={newStaff.phone}
+                      onChange={(e) => setNewStaff({...newStaff, phone: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. +88017..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Department</label>
+                    <input 
+                      type="text" 
+                      value={newStaff.department}
+                      onChange={(e) => setNewStaff({...newStaff, department: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. RAC R&I"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Role</label>
+                    <select 
+                      value={newStaff.role}
+                      onChange={(e) => setNewStaff({...newStaff, role: e.target.value as Role, supervisorId: ''})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    >
+                      {roles.map(r => (
+                        <option key={r} value={r} className="bg-[#0f0f12]">
+                          {r === 'CBO' ? 'Chief Business Officer (CBO)' :
+                           r === 'DCBO' ? 'Deputy Chief Business Officer (DCBO)' :
+                           r === 'HOD' ? 'Head of Department (HOD)' :
+                           r === 'DHOD' ? 'Deputy Head of Department (DHOD)' :
+                           r.replace(/_/g, ' ')}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  {['CBO', 'DCBO', 'HOD', 'DHOD', 'ENGINEER', 'OFFICER', 'TECHNICIAN'].includes(newStaff.role) && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-400 mb-2">
+                        {newStaff.role === 'TECHNICIAN' && shiftingTechnicianIds.includes(newStaff.employeeId) 
+                          ? 'Supervisors (Multi-select for Shifting Technician)' 
+                          : `Supervisor (${newStaff.role === 'CBO' ? 'Super Admin' : newStaff.role === 'DCBO' ? 'CBO / Super Admin' : newStaff.role === 'HOD' ? 'DCBO / CBO' : newStaff.role === 'DHOD' ? 'HOD / DCBO' : newStaff.role === 'ENGINEER' ? 'In-Charge' : newStaff.role === 'OFFICER' ? 'HOD/DHOD/In-Charge/Model Manager/Engineer' : 'Officer'})`}
+                      </label>
+                      
+                      {newStaff.role === 'TECHNICIAN' && shiftingTechnicianIds.includes(newStaff.employeeId) ? (
+                        <div className="max-h-40 overflow-y-auto bg-white/5 border border-white/10 rounded-xl p-4 space-y-2">
+                          {staffList.filter(s => s.role === 'OFFICER' || s.role === 'ENGINEER' || s.role === 'IN_CHARGE' || s.role === 'HOD' || s.role === 'DHOD' || s.role === 'MODEL_MANAGER').map(sup => (
+                            <label key={sup.id} className="flex items-center gap-3 cursor-pointer hover:bg-white/5 p-2 rounded-lg transition-all">
+                              <input 
+                                type="checkbox"
+                                checked={(newStaff.supervisor_ids || []).includes(sup.employeeId)}
+                                onChange={(e) => {
+                                  const current = newStaff.supervisor_ids || [];
+                                  if (e.target.checked) {
+                                    setNewStaff({ ...newStaff, supervisor_ids: [...current, sup.employeeId] });
+                                  } else {
+                                    setNewStaff({ ...newStaff, supervisor_ids: current.filter(id => id !== sup.employeeId) });
+                                  }
+                                }}
+                                className="w-4 h-4 rounded border-white/10 bg-white/5 text-blue-600 focus:ring-blue-500/50"
+                              />
+                              <span className="text-sm text-white">{sup.name} ({sup.employeeId})</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <select 
+                          value={newStaff.supervisorId}
+                          onChange={(e) => setNewStaff({...newStaff, supervisorId: e.target.value})}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                          required={newStaff.role === 'TECHNICIAN'}
+                        >
+                          <option value="" className="bg-[#0f0f12]">Select Supervisor</option>
+                          {staffList.filter(s => {
+                            if (newStaff.role === 'CBO') return s.role === 'SUPER_ADMIN';
+                            if (newStaff.role === 'DCBO') return s.role === 'CBO' || s.role === 'SUPER_ADMIN';
+                            if (newStaff.role === 'HOD') return s.role === 'DCBO' || s.role === 'CBO' || s.role === 'SUPER_ADMIN';
+                            if (newStaff.role === 'DHOD') return s.role === 'HOD' || s.role === 'DCBO' || s.role === 'CBO' || s.role === 'SUPER_ADMIN';
+                            if (newStaff.role === 'ENGINEER') return s.role === 'IN_CHARGE' || s.role === 'HOD' || s.role === 'DHOD' || s.role === 'MODEL_MANAGER' || s.role === 'SUPER_ADMIN';
+                            if (newStaff.role === 'OFFICER') return ['ENGINEER', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'SUPER_ADMIN', 'CBO', 'DCBO'].includes(s.role);
+                            if (newStaff.role === 'TECHNICIAN') return s.role === 'OFFICER' || s.role === 'ENGINEER' || s.role === 'IN_CHARGE' || s.role === 'HOD' || s.role === 'DHOD' || s.role === 'MODEL_MANAGER';
+                            return false;
+                          }).map(s => (
+                            <option key={s.id} value={s.id} className="bg-[#0f0f12]">{s.name} ({s.employeeId}) - {s.role.replace(/_/g, ' ')}</option>
+                          ))}
+                        </select>
+                      )}
+                      
+                      {['ENGINEER', 'OFFICER'].includes(newStaff.role) && (
+                        <p className="text-[10px] text-amber-500 mt-1 italic">Note: This field is for display only. Task assignment is controlled by "Assign Engineers" mapping.</p>
+                      )}
+                    </div>
+                  )}
+
+                  {['OFFICER', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER'].includes(newStaff.role) && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-400 mb-2">
+                        {newStaff.role === 'OFFICER' ? 'Assign Engineers (Multi-select)' : 'Assign Authorities (Multi-select)'}
+                      </label>
+                      <div className="max-h-40 overflow-y-auto bg-white/5 border border-white/10 rounded-xl p-4 space-y-2">
+                        {staffList.filter(s => {
+                          if (newStaff.role === 'OFFICER') return ['ENGINEER', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'SUPER_ADMIN'].includes(s.role);
+                          if (newStaff.role === 'IN_CHARGE' || newStaff.role === 'MODEL_MANAGER') return s.role === 'ENGINEER' || s.role === 'HOD' || s.role === 'DHOD' || s.role === 'IN_CHARGE' || s.role === 'MODEL_MANAGER';
+                          // For HOD/DHOD/Super Admin, they can assign any authority
+                          return ['ENGINEER', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'SUPER_ADMIN'].includes(s.role);
+                        }).map(eng => (
+                          <label key={eng.id} className="flex items-center gap-3 cursor-pointer hover:bg-white/5 p-2 rounded-lg transition-all">
+                            <input 
+                              type="checkbox"
+                              checked={newStaff.assignedEngineers?.includes(eng.employeeId)}
+                              onChange={(e) => {
+                                const current = newStaff.assignedEngineers || [];
+                                if (e.target.checked) {
+                                  setNewStaff({ ...newStaff, assignedEngineers: [...current, eng.employeeId] });
+                                } else {
+                                  setNewStaff({ ...newStaff, assignedEngineers: current.filter(id => id !== eng.employeeId) });
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-white/10 bg-white/5 text-blue-600 focus:ring-blue-500/50"
+                            />
+                            <span className="text-sm text-white">{eng.name} ({eng.employeeId}) - {eng.role.replace('_', ' ')}</span>
+                          </label>
+                        ))}
+                        {staffList.filter(s => {
+                          if (newStaff.role === 'OFFICER') return ['ENGINEER', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'SUPER_ADMIN'].includes(s.role);
+                          if (newStaff.role === 'IN_CHARGE' || newStaff.role === 'MODEL_MANAGER') return s.role === 'ENGINEER' || s.role === 'HOD' || s.role === 'DHOD' || s.role === 'IN_CHARGE' || s.role === 'MODEL_MANAGER';
+                          return ['ENGINEER', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'SUPER_ADMIN'].includes(s.role);
+                        }).length === 0 && (
+                          <p className="text-xs text-gray-500 italic">No Authorities available</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      {editingStaff ? 'New Password (leave blank to keep current)' : 'Login Password'}
+                    </label>
+                    <input 
+                      type="password" 
+                      value={newStaff.password}
+                      onChange={(e) => setNewStaff({...newStaff, password: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder={editingStaff ? "••••••••" : "Set password"}
+                      required={!editingStaff}
+                    />
+                  </div>
+
+                  <div className="pt-4">
+                    <button 
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-blue-500/30"
+                    >
+                      {isLoading ? "Saving..." : editingStaff ? "Update Staff" : "Add Staff"}
+                    </button>
+                  </div>
+                </form>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Task Modal */}
+      <AnimatePresence>
+        {isTaskModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="w-full max-w-2xl"
+            >
+              <GlassCard className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <h2 className="text-2xl font-bold">{editingTask ? 'Edit Task' : 'Create New Task'}</h2>
+                  <button onClick={() => setIsTaskModalOpen(false)} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                    <X size={24} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleTaskSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {user?.role === 'OFFICER' && (
+                    <div className="md:col-span-2">
+                      <div className="flex items-center gap-4 mb-4 p-4 bg-white/5 rounded-xl border border-white/10">
+                        <label className="text-sm font-medium text-gray-400">Work Type:</label>
+                        <div className="flex gap-4">
+                          <button
+                            type="button"
+                            onClick={() => setNewTask({...newTask, workType: 'SINGLE'})}
+                            className={cn(
+                              "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+                              newTask.workType === 'SINGLE' ? "bg-blue-600 text-white" : "bg-white/5 text-gray-400 hover:bg-white/10"
+                            )}
+                          >
+                            Single Work
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewTask({...newTask, workType: 'TEAM'})}
+                            className={cn(
+                              "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+                              newTask.workType === 'TEAM' ? "bg-blue-600 text-white" : "bg-white/5 text-gray-400 hover:bg-white/10"
+                            )}
+                          >
+                            Team Work
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Task Title</label>
+                    <input 
+                      type="text" 
+                      value={newTask.title}
+                      onChange={(e) => setNewTask({...newTask, title: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. Server Room AC Maintenance"
+                      required
+                    />
+                  </div>
+
+                  <div className="relative">
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Model</label>
+                    <button
+                      type="button"
+                      onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-left flex justify-between items-center focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    >
+                      <span>{newTask.model || 'Select Model'}</span>
+                      <ChevronDown size={18} className={cn("transition-transform", isModelDropdownOpen && "rotate-180")} />
+                    </button>
+                    
+                    {isModelDropdownOpen && (
+                      <div className="absolute z-50 w-full mt-2 bg-[#0f0f12] border border-white/10 rounded-xl shadow-2xl overflow-hidden">
+                        <div className="max-h-[200px] overflow-y-auto custom-scrollbar p-1">
+                          {models.filter(m => {
+                            if (user?.role === 'MODEL_MANAGER') {
+                              const myEmpId = user.employeeId;
+                              if (myEmpId === '38056') return ['12K', '9K', 'Portable'].includes(m);
+                              if (myEmpId === '37091') return ['18K'].includes(m);
+                              if (myEmpId === '41053') return ['24K', '30K', '36K'].includes(m);
+                              return false;
+                            }
+                            if (m === 'General Work') return user?.role === 'HOD' || user?.role === 'DHOD' || user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO';
+                            return true;
+                          }).map(m => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => {
+                                setNewTask({...newTask, model: m});
+                                setIsModelDropdownOpen(false);
+                              }}
+                              className={cn(
+                                "w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors",
+                                newTask.model === m ? "bg-blue-600 text-white" : "hover:bg-white/5 text-gray-400 hover:text-white"
+                              )}
+                            >
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Urgency</label>
+                    <select 
+                      value={newTask.urgency}
+                      onChange={(e) => {
+                        const newUrgency = e.target.value as any;
+                        let newPoints = newTask.points;
+                        if (newUrgency === 'REGULAR') newPoints = 1;
+                        else if (newUrgency === 'URGENT') newPoints = 2;
+                        else if (newUrgency === 'MOST_URGENT') newPoints = 3;
+                        setNewTask({...newTask, urgency: newUrgency, points: newPoints});
+                      }}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    >
+                      {urgencies.filter(u => {
+                        if (u === 'MOST_URGENT') {
+                          return user?.role === 'ENGINEER' || user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD' || user?.role === 'IN_CHARGE' || user?.employeeId === '42949';
+                        }
+                        return true;
+                      }).map(u => <option key={u} value={u} className="bg-[#0f0f12]">{u}</option>)}
+                    </select>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Task Details</label>
+                    <textarea 
+                      value={newTask.details}
+                      onChange={(e) => setNewTask({...newTask, details: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 h-32"
+                      placeholder="Describe the task requirements..."
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Deadline (Date Only)</label>
+                    <input 
+                      type="date" 
+                      value={newTask.deadline}
+                      onChange={(e) => setNewTask({...newTask, deadline: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      required
+                    />
+                  </div>
+
+                  {user?.role === 'OFFICER' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-400 mb-2">Duration (Minutes)</label>
+                      <input 
+                        type="number" 
+                        value={newTask.estimatedDuration}
+                        onChange={(e) => setNewTask({...newTask, estimatedDuration: e.target.value})}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                        placeholder="e.g. 60"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  {canViewPoints && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-400 mb-2">Task Point</label>
+                      <input 
+                        type="number" 
+                        value={newTask.points}
+                        onChange={(e) => setNewTask({...newTask, points: parseInt(e.target.value) || 1})}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                        min="1"
+                        max="3"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  <div className="md:col-span-2">
+                    {user?.role === 'OFFICER' ? (
+                      <div className="space-y-4">
+                        <label className="block text-sm font-medium text-gray-400 mb-2">
+                          {newTask.workType === 'SINGLE' ? 'Assign Technician (Search Only)' : 'Assign Team (Search Only)'}
+                        </label>
+                        <div className="relative">
+                          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+                          <input
+                            type="text"
+                            value={techSearch}
+                            onChange={(e) => setTechSearch(e.target.value)}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                            placeholder="Search by ID or Name..."
+                          />
+                        </div>
+                        
+                        {techSearch && (
+                          <div className="max-h-40 overflow-y-auto bg-[#0f0f12] border border-white/10 rounded-xl p-2 space-y-1 custom-scrollbar">
+                            {staffList
+                              .filter(s => s.role === 'TECHNICIAN')
+                              .filter(s => isTechnicianAvailable(s.employeeId))
+                              .filter(s => 
+                                s.name.toLowerCase().includes(techSearch.toLowerCase()) || 
+                                s.employeeId.toString().includes(techSearch)
+                              )
+                              .filter(s => newTask.workType === 'SINGLE' ? true : !selectedTechs.some(st => st.employeeId === s.employeeId))
+                              .map(s => {
+                                const techStatus = getTechnicianStatus(s.employeeId).status;
+                                return (
+                                  <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={() => {
+                                      if (techStatus === 'Working') {
+                                        toast.error(`Technician ${s.name} is currently WORKING on an active task. Please select a FREE technician.`);
+                                        return;
+                                      }
+                                      if (newTask.workType === 'SINGLE') {
+                                        setNewTask({...newTask, assignedTo: s.id});
+                                      } else {
+                                        setSelectedTechs([...selectedTechs, { employeeId: s.employeeId, name: s.name }]);
+                                      }
+                                      setTechSearch('');
+                                    }}
+                                    className="w-full text-left px-4 py-2 hover:bg-white/5 rounded-lg text-sm transition-colors flex justify-between items-center"
+                                  >
+                                    <span>{s.name} ({s.employeeId})</span>
+                                    <span className={cn(
+                                      "text-[10px] px-2 py-0.5 rounded-full font-bold",
+                                      techStatus === 'Working' ? "bg-amber-500/20 text-amber-400" : "bg-emerald-500/20 text-emerald-400"
+                                    )}>
+                                      {techStatus === 'Working' ? 'WORKING' : 'FREE'}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap gap-2">
+                          {newTask.workType === 'SINGLE' && newTask.assignedTo && (
+                            <div className="flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 px-3 py-1.5 rounded-lg">
+                              <span className="text-xs text-blue-400 font-medium">Assigned: {staffList.find(s => s.id === newTask.assignedTo)?.name || newTask.assignedTo}</span>
+                              <button
+                                type="button"
+                                onClick={() => setNewTask({...newTask, assignedTo: ''})}
+                                className="text-blue-400 hover:text-blue-300"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          )}
+                          {newTask.workType === 'TEAM' && selectedTechs.map(t => (
+                            <div key={t.employeeId} className="flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 px-3 py-1.5 rounded-lg">
+                              <span className="text-xs text-blue-400 font-medium">{t.name} ({t.employeeId})</span>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedTechs(selectedTechs.filter(st => st.employeeId !== t.employeeId))}
+                                className="text-blue-400 hover:text-blue-300"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      newTask.workType === 'SINGLE' ? (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-400 mb-2">Assign To</label>
+                          <select 
+                            value={newTask.assignedTo}
+                            onChange={(e) => setNewTask({...newTask, assignedTo: e.target.value})}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                            required
+                          >
+                            <option value="" className="bg-[#0f0f12]">Select Staff</option>
+                            {(() => {
+                              const currentUserData = staffList.find(u => u.id === user?.id) || user;
+                              const myAssignedEngs = currentUserData?.assignedEngineers || [];
+                              const myEmpId = currentUserData?.employeeId?.toString().trim();
+
+                              const filteredStaff = staffList.filter(s => {
+                                if (currentUserData?.role === 'SUPER_ADMIN') return true;
+                                if (currentUserData?.role === 'CBO') {
+                                  // CBO can assign to DCBO, HOD, DHOD, and all lower roles
+                                  return s.role === 'DCBO' || s.role === 'HOD' || s.role === 'DHOD' || s.role === 'IN_CHARGE' || s.role === 'MODEL_MANAGER' || s.role === 'ENGINEER' || s.role === 'OFFICER';
+                                }
+                                if (currentUserData?.role === 'DCBO') {
+                                  // DCBO can assign to HOD, DHOD, and all lower roles
+                                  return s.role === 'HOD' || s.role === 'DHOD' || s.role === 'IN_CHARGE' || s.role === 'MODEL_MANAGER' || s.role === 'ENGINEER' || s.role === 'OFFICER';
+                                }
+                                if (['HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER'].includes(currentUserData?.role || '')) {
+                                  const isMyOfficer = s.role === 'OFFICER' && (s.assignedEngineers || []).some(id => id.toString().trim() === myEmpId);
+                                  const isMyEngineer = s.role === 'ENGINEER' && myAssignedEngs.includes(s.employeeId);
+                                  return isMyOfficer || isMyEngineer || s.role === 'HOD' || s.role === 'DHOD' || s.role === 'IN_CHARGE' || s.role === 'MODEL_MANAGER';
+                                }
+                                if (currentUserData?.role === 'ENGINEER') {
+                                  return s.role === 'OFFICER' && (s.assignedEngineers || []).some(id => id.toString().trim() === myEmpId);
+                                }
+                                return false;
+                              });
+
+                              return filteredStaff.map(s => (
+                                <option key={s.id} value={s.id} className="bg-[#0f0f12]">{s.name} ({s.employeeId})</option>
+                              ));
+                            })()}
+                          </select>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          <label className="block text-sm font-medium text-gray-400 mb-2">Assign Team (Multiple Technicians)</label>
+                          <div className="relative">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+                            <input
+                              type="text"
+                              value={techSearch}
+                              onChange={(e) => setTechSearch(e.target.value)}
+                              className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                              placeholder="Search by ID or Name..."
+                            />
+                          </div>
+                          
+                          {techSearch && (
+                            <div className="max-h-40 overflow-y-auto bg-[#0f0f12] border border-white/10 rounded-xl p-2 space-y-1 custom-scrollbar">
+                              {staffList
+                                .filter(s => s.role === 'TECHNICIAN')
+                                .filter(s => 
+                                  s.name.toLowerCase().includes(techSearch.toLowerCase()) || 
+                                  s.employeeId.toString().includes(techSearch)
+                                )
+                                .filter(s => !selectedTechs.some(st => st.employeeId === s.employeeId))
+                                .map(s => (
+                                  <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedTechs([...selectedTechs, { employeeId: s.employeeId, name: s.name }]);
+                                      setTechSearch('');
+                                    }}
+                                    className="w-full text-left px-4 py-2 hover:bg-white/5 rounded-lg text-sm transition-colors"
+                                  >
+                                    {s.name} ({s.employeeId})
+                                  </button>
+                                ))}
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap gap-2">
+                            {selectedTechs.map(t => (
+                              <div key={t.employeeId} className="flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 px-3 py-1.5 rounded-lg">
+                                <span className="text-xs text-blue-400 font-medium">{t.name} ({t.employeeId})</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedTechs(selectedTechs.filter(st => st.employeeId !== t.employeeId))}
+                                  className="text-blue-400 hover:text-blue-300"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    )}
+                  </div>
+
+                  <div className="md:col-span-2 p-4 bg-blue-500/5 border border-blue-500/10 rounded-xl space-y-4">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-bold text-blue-400">Custom Time Control (Back-Time)</label>
+                      <Info size={16} className="text-blue-400/50" />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] text-gray-500 uppercase mb-1">Custom Start Time</label>
+                        <input 
+                          type="datetime-local"
+                          value={newTask.customStartTime}
+                          onChange={(e) => setNewTask({...newTask, customStartTime: e.target.value})}
+                          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-gray-500 uppercase mb-1">Time (minutes) (e.g. 30 or 2h 30m)</label>
+                        <input 
+                          type="text"
+                          value={newTask.estimatedDuration}
+                          onChange={(e) => setNewTask({...newTask, estimatedDuration: e.target.value})}
+                          placeholder="e.g. 60"
+                          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-2 pt-4">
+                    <button 
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-blue-500/30"
+                    >
+                      {isLoading ? (
+                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin mx-auto" />
+                      ) : (
+                        <>
+                          {editingTask ? 'Update Task' : (
+                            user?.role === 'OFFICER'
+                              ? (isOwnTechnician() ? 'Assign Task (Direct)' : 'Request to Supervisor')
+                              : 'Create Task'
+                          )}
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+
+        {isStatusUpdateModalOpen && statusUpdateTask && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="w-full max-w-md"
+            >
+              <GlassCard className="p-8">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-2xl font-bold">Update Task Status</h2>
+                  <button onClick={() => setIsStatusUpdateModalOpen(false)} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                    <X size={24} />
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  <div>
+                    <p className="text-xs text-gray-400 uppercase tracking-widest mb-4">Progress: {statusUpdateData.progress}%</p>
+                    <input 
+                      type="range" 
+                      min="0" 
+                      max="100" 
+                      step="5"
+                      value={statusUpdateData.progress}
+                      onChange={(e) => {
+                        const p = parseInt(e.target.value);
+                        setStatusUpdateData({ 
+                          ...statusUpdateData, 
+                          progress: p, 
+                          status: p === 100 ? 'COMPLETED' : 'RUNNING',
+                          actualCompletionTime: p === 100 && !statusUpdateData.actualCompletionTime
+                            ? formatDateForInput(new Date().toISOString(), 'datetime-local')
+                            : statusUpdateData.actualCompletionTime
+                        });
+                      }}
+                      className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                    <div className="flex justify-between mt-2 text-[10px] text-gray-500 font-bold">
+                      <span>0%</span>
+                      <span>50%</span>
+                      <span>100%</span>
+                    </div>
+                  </div>
+
+                  {statusUpdateData.progress === 100 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="space-y-2"
+                    >
+                      <label className="text-xs text-gray-400 uppercase tracking-widest">Actual Completion Time (Manual)</label>
+                      <input 
+                        type="datetime-local"
+                        value={statusUpdateData.actualCompletionTime}
+                        onChange={(e) => setStatusUpdateData({ ...statusUpdateData, actualCompletionTime: e.target.value })}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      />
+                    </motion.div>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="text-xs text-gray-400 uppercase tracking-widest">Remarks (Mandatory)</label>
+                    <textarea
+                      value={statusUpdateData.remarks}
+                      onChange={(e) => setStatusUpdateData({ ...statusUpdateData, remarks: e.target.value })}
+                      placeholder="Enter update remarks..."
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-4 text-white focus:outline-none focus:border-blue-500 min-h-[80px]"
+                      required
+                    />
+                  </div>
+
+                  <div className="pt-4 border-t border-white/10 space-y-2">
+                    <label className="text-xs text-gray-400 uppercase tracking-widest block">Work Status Mode</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStatusUpdateData({ 
+                            ...statusUpdateData, 
+                            status: statusUpdateData.progress === 100 ? 'COMPLETED' : 'RUNNING' 
+                          });
+                        }}
+                        className={cn(
+                          "py-3.5 px-3 rounded-xl font-bold transition-all border flex items-center justify-center gap-2 text-xs",
+                          statusUpdateData.status !== 'HOLD'
+                            ? "bg-green-600 border-green-500 text-white shadow-lg shadow-green-500/20"
+                            : "bg-white/5 border-white/10 text-green-400 hover:bg-green-500/10"
+                        )}
+                      >
+                        <Play size={16} />
+                        Active / Running
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStatusUpdateData({ 
+                            ...statusUpdateData, 
+                            status: 'HOLD' 
+                          });
+                        }}
+                        className={cn(
+                          "py-3.5 px-3 rounded-xl font-bold transition-all border flex items-center justify-center gap-2 text-xs",
+                          statusUpdateData.status === 'HOLD'
+                            ? "bg-amber-600 border-amber-500 text-white shadow-lg shadow-amber-500/20"
+                            : "bg-white/5 border-white/10 text-amber-400 hover:bg-amber-500/10"
+                        )}
+                      >
+                        <Pause size={16} />
+                        Temporary Hold
+                      </button>
+                    </div>
+                  </div>
+
+                  {statusUpdateData.status === 'HOLD' && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      className="space-y-2"
+                    >
+                      <label className="text-xs text-gray-400 uppercase tracking-widest">Hold Remarks (Required)</label>
+                      <textarea
+                        value={statusUpdateData.remarks}
+                        onChange={(e) => setStatusUpdateData({ ...statusUpdateData, remarks: e.target.value })}
+                        placeholder="Explain why this task is on hold (max 100 words)..."
+                        className="w-full bg-white/5 border border-white/10 rounded-xl p-4 text-white focus:outline-none focus:border-blue-500 min-h-[100px]"
+                        maxLength={500}
+                      />
+                    </motion.div>
+                  )}
+
+                  <button
+                    onClick={handleStatusUpdate}
+                    disabled={isLoading || (statusUpdateData.status === 'HOLD' && !statusUpdateData.remarks.trim())}
+                    className="w-full py-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all shadow-lg shadow-blue-500/30 mt-4"
+                  >
+                    {isLoading ? "Updating..." : "Confirm Update"}
+                  </button>
+                </div>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Change Password Modal */}
+      <AnimatePresence>
+        {isChangePasswordModalOpen && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="w-full max-w-md"
+            >
+              <GlassCard className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <h2 className="text-2xl font-bold">Change Password</h2>
+                  <button onClick={() => setIsChangePasswordModalOpen(false)} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                    <X size={24} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleChangePassword} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Current Password</label>
+                    <input 
+                      type="password" 
+                      value={passwordData.currentPassword}
+                      onChange={(e) => setPasswordData({...passwordData, currentPassword: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">New Password</label>
+                    <input 
+                      type="password" 
+                      value={passwordData.newPassword}
+                      onChange={(e) => setPasswordData({...passwordData, newPassword: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      required
+                      minLength={6}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Confirm New Password</label>
+                    <input 
+                      type="password" 
+                      value={passwordData.confirmPassword}
+                      onChange={(e) => setPasswordData({...passwordData, confirmPassword: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      required
+                    />
+                  </div>
+
+                  <div className="pt-4">
+                    <button 
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-blue-500/30"
+                    >
+                      {isLoading ? "Updating..." : "Change Password"}
+                    </button>
+                  </div>
+                </form>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Reset Password Modal (Super Admin) */}
+      <AnimatePresence>
+        {isResetPasswordModalOpen && resetPasswordUser && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="w-full max-w-md"
+            >
+              <GlassCard className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <h2 className="text-2xl font-bold">Reset Password</h2>
+                  <button onClick={() => setIsResetPasswordModalOpen(false)} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                    <X size={24} />
+                  </button>
+                </div>
+
+                <div className="mb-6 p-4 bg-blue-600/10 rounded-xl border border-blue-600/20">
+                  <p className="text-sm text-blue-400">Resetting password for:</p>
+                  <p className="text-lg font-bold">{resetPasswordUser.name} ({resetPasswordUser.employeeId})</p>
+                </div>
+
+                <form onSubmit={handleResetPassword} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">New Password</label>
+                    <input 
+                      type="password" 
+                      value={resetPasswordData.newPassword}
+                      onChange={(e) => setResetPasswordData({...resetPasswordData, newPassword: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      required
+                      minLength={6}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Confirm New Password</label>
+                    <input 
+                      type="password" 
+                      value={resetPasswordData.confirmPassword}
+                      onChange={(e) => setResetPasswordData({...resetPasswordData, confirmPassword: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      required
+                    />
+                  </div>
+
+                  <div className="pt-4">
+                    <button 
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-amber-500/30"
+                    >
+                      {isLoading ? "Resetting..." : "Reset Password"}
+                    </button>
+                  </div>
+                </form>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Sidebar */}
+      <motion.aside 
+        initial={false}
+        animate={{ width: isSidebarOpen ? 280 : 0, opacity: isSidebarOpen ? 1 : 0 }}
+        className="h-screen bg-[#0f0f12] border-r border-white/5 flex flex-col relative z-30"
+      >
+        <div className="p-6 flex items-center gap-3 mb-8">
+          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <AirVent size={20} />
+          </div>
+          <span className="font-bold text-xl tracking-tight uppercase">Daily Work Update</span>
+        </div>
+
+        <nav className="flex-1 px-4 space-y-2 overflow-y-auto custom-scrollbar">
+          {/* 1. Attendance */}
+          {['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'OFFICER', 'ENGINEER', 'TECHNICIAN'].includes(user?.role || '') && (
+            <SidebarItem 
+              icon={CheckCircle2} 
+              label="Attendance" 
+              active={activeTab === 'attendance'} 
+              onClick={() => setActiveTab('attendance')} 
+              color="text-green-500"
+            />
+          )}
+
+          {/* Executive Command Panel (For CBO, DCBO, HOD, DHOD, 19219, 17668, SUPER_ADMIN) */}
+          {isExecutiveUser && (
+            <SidebarItem 
+              icon={Shield} 
+              label="Executive Command Panel" 
+              active={activeTab === 'executive_command'} 
+              onClick={() => setActiveTab('executive_command')} 
+              color="text-indigo-400"
+            />
+          )}
+
+          {/* 2. Dashboard */}
+          {user?.role !== 'CBO' && user?.role !== 'DCBO' && (
+            <SidebarItem 
+              icon={LayoutDashboard} 
+              label="Dashboard" 
+              active={activeTab === 'dashboard'} 
+              onClick={() => setActiveTab('dashboard')} 
+              color="text-blue-500"
+            />
+          )}
+
+          {/* 3. Task Management */}
+          <SidebarItem 
+            icon={ClipboardList} 
+            label="Task Management" 
+            active={activeTab === 'tasks' || activeTab === 'officer_tasks' || activeTab === 'mywork'} 
+            onClick={() => {
+              if (user?.role === 'TECHNICIAN') setActiveTab('mywork');
+              else setActiveTab('tasks');
+            }} 
+            color="text-purple-500"
+            count={user?.role === 'ENGINEER' ? tasks.filter(isTaskPendingRecommendation).length : undefined}
+          />
+
+          {/* 4. Daily Task */}
+          <SidebarItem 
+            icon={Calendar} 
+            label="Daily Task" 
+            active={activeTab === 'daily_task'} 
+            onClick={() => setActiveTab('daily_task')} 
+            color="text-orange-500"
+          />
+
+          {/* 5. Team Performance */}
+          <SidebarItem 
+            icon={TrendingUp} 
+            label="Team Performance" 
+            active={activeTab === 'performance'} 
+            onClick={() => setActiveTab('performance')} 
+            color="text-blue-400"
+          />
+
+          {/* 6. Report Management */}
+          <SidebarItem 
+            icon={FileText} 
+            label="Report Management" 
+            active={activeTab === 'reports' || activeTab === 'officer_reports'} 
+            onClick={() => setActiveTab('reports')} 
+            color="text-indigo-500"
+          />
+
+          {/* 7. Analytics */}
+          <SidebarItem 
+            icon={BarChart3} 
+            label="Analytics" 
+            active={activeTab === 'analytics'} 
+            onClick={() => setActiveTab('analytics')} 
+            color="text-cyan-500"
+          />
+
+          {/* 8. Technician Monitoring */}
+          {['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'OFFICER', 'ENGINEER'].includes(user?.role || '') && (
+            <SidebarItem 
+              icon={Activity} 
+              label="Technician Monitoring" 
+              active={activeTab === 'technician_monitoring'} 
+              onClick={() => setActiveTab('technician_monitoring')} 
+              color="text-red-500"
+            />
+          )}
+
+          {/* 9. Team Requests (Supervisor Approval) */}
+          {['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(user?.role || '') && (
+            <SidebarItem 
+              icon={Bell} 
+              label="Team Requests" 
+              active={activeTab === 'other_team_requests'} 
+              onClick={() => setActiveTab('other_team_requests')} 
+              color="text-yellow-500"
+              count={tasks.filter(isTaskRequestedForMe).length}
+            />
+          )}
+
+          {/* 10. Section/Model/Dept Overview */}
+          {['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER'].includes(user?.role || '') && (
+            <SidebarItem 
+              icon={Layers} 
+              label={
+                user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD' || user?.role === 'SUPER_ADMIN' ? "Department Overview" :
+                user?.role === 'IN_CHARGE' ? "Section Overview" : "Model Wise Work"
+              } 
+              active={activeTab === 'section' || activeTab === 'models'} 
+              onClick={() => {
+                if (user?.role === 'MODEL_MANAGER') setActiveTab('models');
+                else setActiveTab('section');
+              }} 
+              color="text-emerald-500"
+            />
+          )}
+
+          {/* 11. Staff Management */}
+          {(user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD') && (
+            <SidebarItem 
+              icon={Users} 
+              label="Staff Management" 
+              active={activeTab === 'staff'} 
+              onClick={() => setActiveTab('staff')} 
+              color="text-blue-600"
+            />
+          )}
+
+          {/* 11b. Shift Management */}
+          {['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD', 'IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(user?.role || '') && (
+            <SidebarItem
+              icon={Clock}
+              label="Shift Management"
+              active={isShiftModalOpen}
+              onClick={() => setIsShiftModalOpen(true)}
+              color="text-amber-400"
+            />
+          )}
+
+          {/* 12. My Profile */}
+          <SidebarItem 
+            icon={UserCircle} 
+            label="My Profile" 
+            active={activeTab === 'profile'} 
+            onClick={() => setActiveTab('profile')} 
+            color="text-gray-400"
+          />
+
+          {/* 13. Themes */}
+          <SidebarItem 
+            icon={Palette} 
+            label="Themes" 
+            active={activeTab === 'theme'} 
+            onClick={() => setActiveTab('theme')} 
+            color="text-pink-500"
+          />
+
+          {/* 14. Change Password */}
+          <SidebarItem 
+            icon={Lock} 
+            label="Change Password" 
+            active={isChangePasswordModalOpen} 
+            onClick={() => setIsChangePasswordModalOpen(true)} 
+            color="text-amber-500"
+          />
+
+          {/* 15. Backup & Restore (Super Admin Only) */}
+          {user?.role === 'SUPER_ADMIN' && (
+            <SidebarItem 
+              icon={Database} 
+              label="Backup & Restore" 
+              active={activeTab === 'backup_restore'} 
+              onClick={() => setActiveTab('backup_restore')} 
+              color="text-slate-500"
+            />
+          )}
+
+          {/* 16. Security Center (Super Admin Only) */}
+          {user?.role === 'SUPER_ADMIN' && (
+            <SidebarItem 
+              icon={Shield} 
+              label="Security Center" 
+              active={['activity_logs', 'active_sessions', 'suspicious_logins', 'locked_devices', 'audit_trail'].includes(activeTab)} 
+              onClick={() => setActiveTab('activity_logs')} 
+              color="text-red-600"
+              count={suspiciousLogins.length}
+            />
+          )}
+        </nav>
+
+        <div className="p-4 border-t border-white/5">
+          <div className="bg-white/5 rounded-2xl p-4 flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center font-bold">
+              {user?.name[0]}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold truncate">{user?.name}</p>
+              <p className="text-[10px] text-gray-500 uppercase tracking-wider">
+                {user?.role === 'CBO' ? 'Chief Business Officer' : user?.role === 'DCBO' ? 'Deputy Chief Business Officer' : user?.role.replace('_', ' ')}
+              </p>
+            </div>
+          </div>
+          <button 
+            onClick={handleLogout}
+            className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-400 hover:bg-red-400/10 transition-all"
+          >
+            <LogOut size={20} />
+            <span className="font-medium">Sign Out</span>
+          </button>
+        </div>
+      </motion.aside>
+
+      {/* Main Content */}
+      <main className="flex-1 h-screen overflow-y-auto relative">
+        {/* Header */}
+        <header className="sticky top-0 z-20 bg-[#0a0a0c]/80 backdrop-blur-xl border-bottom border-white/5 px-8 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className="p-2 hover:bg-white/5 rounded-lg text-gray-400"
+            >
+              {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
+            <h2 className="text-xl font-bold capitalize">
+              {activeTab === 'executive_command' ? (isHodExecutiveUser ? 'Department Operations & Workforce Command Center' : 'Executive Business & Workforce Command Center') :
+               activeTab === 'dashboard' ? (user?.role === 'CBO' || user?.role === 'DCBO' ? 'Executive Business & Workforce Command Center' : (isHodExecutiveUser ? 'Department Command & Operations' : 'Dashboard')) :
+               activeTab === 'tasks' || activeTab === 'officer_tasks' || activeTab === 'mywork' ? 'Task Management' :
+               activeTab === 'attendance' ? 'Attendance' :
+               activeTab === 'daily_task' ? 'Daily Task' :
+               activeTab === 'performance' ? 'Team Performance' :
+               activeTab === 'reports' ? 'Report Management' :
+               activeTab === 'analytics' ? 'Analytics' :
+               activeTab === 'technician_monitoring' ? 'Technician Monitoring' :
+               activeTab === 'section' || activeTab === 'models' ? (
+                 user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD' || user?.role === 'SUPER_ADMIN' ? "Department Overview" :
+                 user?.role === 'IN_CHARGE' ? "Section Overview" : "Model Wise Work"
+               ) :
+               activeTab === 'staff' ? 'Staff Management' :
+               activeTab === 'profile' ? 'My Profile' :
+               activeTab === 'theme' ? 'Themes' :
+               activeTab === 'backup_restore' ? 'Backup & Restore' :
+               activeTab === 'other_team_requests' ? 'Team Requests' :
+               activeTab.replace('_', ' ')}
+            </h2>
+          </div>
+
+          <div className="flex items-center gap-6">
+            <div className="relative hidden md:block">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+              <input 
+                type="text" 
+                placeholder="Search tasks, staff..." 
+                className="bg-white/5 border border-white/10 rounded-full pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 w-64"
+              />
+            </div>
+            <div className="relative">
+              <button 
+                onClick={() => setIsNotificationOpen(!isNotificationOpen)}
+                className="relative p-2 hover:bg-white/5 rounded-full text-gray-400"
+              >
+                <Bell size={20} />
+                {notifications.some(n => !n.read) && (
+                  <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-[#0a0a0c]" />
+                )}
+              </button>
+              
+              {isNotificationOpen && (
+                <div className="absolute right-0 mt-2 w-80 bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
+                  <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                    <h3 className="font-bold text-sm">Notifications</h3>
+                    <button 
+                      onClick={clearNotifications}
+                      className="text-[10px] text-gray-500 hover:text-white uppercase tracking-widest"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                  <div className="max-h-96 overflow-y-auto custom-scrollbar">
+                    {notifications.length === 0 ? (
+                      <div className="p-8 text-center text-gray-500 text-xs italic">
+                        No notifications
+                      </div>
+                    ) : (
+                      notifications.slice().reverse().map(n => (
+                        <div 
+                          key={n.id} 
+                          onClick={() => markNotificationRead(n.id)}
+                          className={cn(
+                            "p-4 border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors",
+                            !n.read && "bg-blue-500/5"
+                          )}
+                        >
+                          <p className={cn("text-xs mb-1", !n.read ? "text-white font-medium" : "text-gray-400")}>
+                            {n.message}
+                          </p>
+                          <p className="text-[10px] text-gray-600">
+                            {new Date(n.timestamp).toLocaleString()}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="w-10 h-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center cursor-pointer">
+              <UserCircle size={24} className="text-gray-400" />
+            </div>
+          </div>
+        </header>
+
+        <div className={cn(
+          "space-y-8",
+          activeTab === 'tasks' ? "w-full px-4 sm:px-6 py-6 max-w-[100%] mx-0" : "p-8 max-w-7xl mx-auto"
+        )}>
+          {/* Executive Command Panel Tab (Direct from Sidebar) */}
+          {activeTab === 'executive_command' && (
+            <ExecutiveCommandCenter
+              currentUser={user!}
+              staffList={staffList}
+              tasks={tasks}
+              attendance={attendance}
+              onOpenNewTaskModal={(preselectedAssignee) => {
+                setEditingTask(null);
+                setNewTask({ 
+                  title: '', 
+                  model: 'General Work', 
+                  details: '', 
+                  urgency: 'REGULAR', 
+                  assignedTo: preselectedAssignee || '', 
+                  deadline: '', 
+                  points: 1, 
+                  customStartTime: '', 
+                  estimatedDuration: '',
+                  workType: 'SINGLE',
+                  assignedTechnicians: []
+                });
+                setSelectedTechs([]);
+                setIsTaskModalOpen(true);
+              }}
+              onRefreshData={handleRecalculate}
+              onUpdateAttendance={handleUpdateAttendance}
+              onSelectTask={(task) => {
+                setSelectedTask(task);
+                setIsTaskDetailsModalOpen(true);
+              }}
+            />
+          )}
+
+          {activeTab === 'dashboard' && (
+            (user?.role === 'CBO' || user?.role === 'DCBO') ? (
+              <ExecutiveCommandCenter
+                currentUser={user!}
+                staffList={staffList}
+                tasks={tasks}
+                attendance={attendance}
+                onOpenNewTaskModal={(preselectedAssignee) => {
+                  setEditingTask(null);
+                  setNewTask({ 
+                    title: '', 
+                    model: 'General Work', 
+                    details: '', 
+                    urgency: 'REGULAR', 
+                    assignedTo: preselectedAssignee || '', 
+                    deadline: '', 
+                    points: 1, 
+                    customStartTime: '', 
+                    estimatedDuration: '',
+                    workType: 'SINGLE',
+                    assignedTechnicians: []
+                  });
+                  setSelectedTechs([]);
+                  setIsTaskModalOpen(true);
+                }}
+                onRefreshData={handleRecalculate}
+                onUpdateAttendance={handleUpdateAttendance}
+                onSelectTask={(task) => {
+                  setSelectedTask(task);
+                  setIsTaskDetailsModalOpen(true);
+                }}
+              />
+            ) : isHodExecutiveUser && hodDashboardView === 'command' ? (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/5 p-3 rounded-2xl border border-white/10">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setHodDashboardView('command')}
+                      className="px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 bg-indigo-600 text-white shadow-lg shadow-indigo-500/25"
+                    >
+                      <Shield size={14} />
+                      Executive Command Panel
+                    </button>
+                    <button
+                      onClick={() => setHodDashboardView('standard')}
+                      className="px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 text-gray-400 hover:text-white hover:bg-white/5"
+                    >
+                      <LayoutDashboard size={14} />
+                      Standard Overview
+                    </button>
+                  </div>
+                  <span className="text-xs text-indigo-300 font-medium px-2">
+                    Hierarchical Operational Monitoring (In-Charge → Technician)
+                  </span>
+                </div>
+                <ExecutiveCommandCenter
+                  currentUser={user!}
+                  staffList={staffList}
+                  tasks={tasks}
+                  attendance={attendance}
+                  onOpenNewTaskModal={(preselectedAssignee) => {
+                    setEditingTask(null);
+                    setNewTask({ 
+                      title: '', 
+                      model: 'General Work', 
+                      details: '', 
+                      urgency: 'REGULAR', 
+                      assignedTo: preselectedAssignee || '', 
+                      deadline: '', 
+                      points: 1, 
+                      customStartTime: '', 
+                      estimatedDuration: '',
+                      workType: 'SINGLE',
+                      assignedTechnicians: []
+                    });
+                    setSelectedTechs([]);
+                    setIsTaskModalOpen(true);
+                  }}
+                  onRefreshData={handleRecalculate}
+                  onUpdateAttendance={handleUpdateAttendance}
+                  onSelectTask={(task) => {
+                    setSelectedTask(task);
+                    setIsTaskDetailsModalOpen(true);
+                  }}
+                />
+              </div>
+            ) : (
+            <>
+              {isHodExecutiveUser && (
+                <div className="flex items-center justify-between bg-white/5 p-3 rounded-2xl border border-white/10 mb-4">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setHodDashboardView('command')}
+                      className="px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 text-gray-400 hover:text-white hover:bg-white/5"
+                    >
+                      <Shield size={14} />
+                      Executive Command Panel
+                    </button>
+                    <button
+                      onClick={() => setHodDashboardView('standard')}
+                      className="px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 bg-blue-600 text-white shadow-lg shadow-blue-500/25"
+                    >
+                      <LayoutDashboard size={14} />
+                      Standard Overview
+                    </button>
+                  </div>
+                  <span className="text-xs text-slate-400 font-medium px-2">
+                    Department Overview Mode
+                  </span>
+                </div>
+              )}
+              {/* Welcome Section */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h1 className="text-3xl font-bold">Welcome back, {user?.name.split(' ')[0]}! 👋</h1>
+                  <p className="text-gray-400 mt-1">Here's what's happening in your department today.</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {['SUPER_ADMIN', 'HOD', 'DHOD'].includes(user?.role || '') && (
+                    <button 
+                      onClick={handleRecalculate}
+                      disabled={isLoading}
+                      className="bg-white/5 hover:bg-white/10 text-white px-6 py-3 rounded-xl font-bold border border-white/10 flex items-center gap-2 transition-all disabled:opacity-50"
+                      title="Recalculate all points from database"
+                    >
+                      <RefreshCw size={20} className={isLoading ? "animate-spin" : ""} />
+                      Recalculate
+                    </button>
+                  )}
+                  {(!['TECHNICIAN', 'OFFICER'].includes(user?.role || '') || (user?.role === 'OFFICER' && user?.employeeId === '42949')) && (
+                    <button 
+                      onClick={() => {
+                        setEditingTask(null);
+                        setNewTask({ 
+                          title: '', 
+                          model: 'Portable', 
+                          details: '', 
+                          urgency: 'REGULAR', 
+                          assignedTo: '', 
+                          deadline: '', 
+                          points: 1, 
+                          customStartTime: '', 
+                          estimatedDuration: '',
+                          workType: 'SINGLE',
+                          assignedTechnicians: []
+                        });
+                        setSelectedTechs([]);
+                        setIsTaskModalOpen(true);
+                      }}
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-blue-500/20 flex items-center gap-2 transition-all"
+                    >
+                      <Plus size={20} />
+                      New Task
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Stats Grid */}
+              <div className={cn(
+                "grid grid-cols-1 sm:grid-cols-2 gap-6",
+                user?.role === 'OFFICER' ? "lg:grid-cols-5" : "lg:grid-cols-4"
+              )}>
+                <StatCard label="Total Tasks" value={dashboardTasks.length} icon={ClipboardList} color="bg-blue-500" trend="+12% from last week" />
+                <StatCard label="Running" value={dashboardTasks.filter(t => t.status === 'RUNNING').length} icon={Clock} color="bg-amber-500" />
+                <StatCard label="Completed" value={dashboardTasks.filter(t => t.status === 'COMPLETED').length} icon={CheckCircle2} color="bg-green-500" trend="+5% from yesterday" />
+                <StatCard label="Delayed" value={dashboardTasks.filter(t => t.status === 'DELAYED').length} icon={AlertCircle} color="bg-red-500" />
+                {user?.role === 'OFFICER' && (
+                  <StatCard 
+                    label="Total Points" 
+                    value={getValidOfficerPoints(user.id)} 
+                    icon={BarChart3} 
+                    color="bg-purple-500" 
+                    trend={`+${getValidOfficerPoints(user.id, true)} this month`}
+                  />
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Recent Tasks */}
+                <GlassCard className="lg:col-span-2">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-lg font-bold">Recent Tasks</h3>
+                    <button 
+                      onClick={() => setActiveTab('tasks')}
+                      className="text-blue-400 text-sm font-medium hover:underline"
+                    >
+                      View All
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    {dashboardTasks.length > 0 ? dashboardTasks.slice(0, 5).map((task, i) => (
+                      <div key={task.id} className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 rounded-xl bg-white/5 border border-white/5 hover:border-white/10 transition-all group">
+                        <div className="flex items-center gap-4 flex-1">
+                          <div className={cn(
+                            "w-12 h-12 rounded-xl flex items-center justify-center shrink-0",
+                            task.urgency === 'MOST_URGENT' ? "bg-red-500/20 text-red-500" : "bg-blue-500/20 text-blue-500"
+                          )}>
+                            <ClipboardList size={20} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-bold text-sm truncate">{task.title}</h4>
+                            <p className="text-xs text-gray-500 mt-1">{task.taskId} • {task.model}</p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-6 justify-between sm:justify-end">
+                          <div className="text-right shrink-0">
+                            <span className={cn(
+                              "text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider",
+                              task.status === 'RUNNING' ? "bg-amber-500/20 text-amber-500" : 
+                              task.status === 'COMPLETED' ? "bg-green-500/20 text-green-500" :
+                              task.status === 'HOLD' ? "bg-red-500/20 text-red-500" :
+                              "bg-blue-500/20 text-blue-500"
+                            )}>
+                              {task.status}
+                            </span>
+                            {task.status === 'HOLD' ? (
+                              <p className="text-[10px] text-gray-500 mt-2">Paused</p>
+                            ) : (
+                              <p className="text-xs text-gray-500 mt-2">{task.progress}% Complete</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="py-12 text-center">
+                        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+                          <ClipboardList size={24} className="text-gray-600" />
+                        </div>
+                        <p className="text-gray-500">No tasks found. Create one to get started.</p>
+                      </div>
+                    )}
+                  </div>
+                </GlassCard>
+
+                {/* AI Insights */}
+                <GlassCard className="bg-gradient-to-br from-indigo-600/20 to-purple-600/20 border-indigo-500/30">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 bg-indigo-500 rounded-lg">
+                        <BarChart3 size={18} />
+                      </div>
+                      <h3 className="text-lg font-bold">AI Smart Insights</h3>
+                    </div>
+                    {isAiLoading && (
+                      <div className="flex items-center gap-2 text-xs text-indigo-300">
+                        <div className="w-3 h-3 border-2 border-indigo-300 border-t-transparent rounded-full animate-spin" />
+                        <span>Analyzing...</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-6">
+                    <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                      <p className="text-xs text-indigo-300 font-bold uppercase tracking-widest mb-2">Priority Detection</p>
+                      <p className="text-sm text-gray-300">
+                        {isAiLoading ? "Analyzing task patterns for priority optimization..." : (aiInsights?.reason || "No insights available yet.")}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                      <p className="text-xs text-purple-300 font-bold uppercase tracking-widest mb-2">Delay Prediction</p>
+                      <p className="text-sm text-gray-300">
+                        {isAiLoading ? "Monitoring deadlines for potential bottlenecks..." : (
+                          aiInsights?.delayPrediction 
+                            ? `Overall workload has a ${Math.round(aiInsights.delayPrediction.probability)}% probability of delay.` 
+                            : "Monitoring deadlines for potential bottlenecks..."
+                        )}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                      <p className="text-xs text-green-300 font-bold uppercase tracking-widest mb-2">Efficiency Tip</p>
+                      <p className="text-sm text-gray-300">
+                        {isAiLoading ? "Calculating optimal assignments..." : ((aiInsights as any)?.efficiencyTip || "Workload distribution is balanced. Maintain current workflow pace.")}
+                      </p>
+                    </div>
+                  </div>
+                </GlassCard>
+              </div>
+            </>
+            )
+          )}
+
+          {activeTab === 'tasks' && (
+            <div className="space-y-6">
+              {user?.role === 'ENGINEER' && (
+                <div className="space-y-4 mb-8">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-amber-500/20 rounded-lg text-amber-500">
+                        <Zap size={20} />
+                      </div>
+                      <div>
+                        <h2 className="text-2xl font-bold">Recommendation Panel</h2>
+                        <p className="text-xs text-gray-400">
+                          {canViewPoints 
+                            ? "Review task entries & team requests from your Officers to recommend points and approve deadlines" 
+                            : "Review task entries & team requests from your Officers to approve deadlines and recommend tasks"}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-bold rounded-full">
+                      {tasks.filter(isTaskPendingRecommendation).length} Pending
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {tasks.filter(isTaskPendingRecommendation).length === 0 ? (
+                      <div className="md:col-span-2 p-8 bg-white/5 border border-dashed border-white/10 rounded-2xl text-center">
+                        <p className="text-gray-500">No pending recommendations from your Officers.</p>
+                      </div>
+                    ) : (
+                      tasks.filter(isTaskPendingRecommendation).map(task => {
+                        const creator = staffList.find(s => s.employeeId === task.createdBy || s.id === task.createdBy);
+                        const assignedPoint = recPoints[task.id] !== undefined 
+                          ? recPoints[task.id] 
+                          : (task.points && task.points > 0 ? task.points : 1);
+                        const currentDeadline = recDeadlines[task.id] !== undefined
+                          ? recDeadlines[task.id]
+                          : (task.engineer_deadline || task.deadline || '');
+
+                        let techDisplay = task.assignedTo;
+                        if (task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.length > 0) {
+                          techDisplay = task.assignedTechnicians.map((t: any) => t.name || t.employeeId).join(', ');
+                        }
+
+                        return (
+                          <GlassCard key={task.id} className="p-6 border-amber-500/20">
+                            <div className="flex justify-between items-start mb-3">
+                              <div>
+                                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                  <h3 className="font-bold text-lg">{task.title}</h3>
+                                  {task.workType === 'TEAM' && (
+                                    <span className="px-2 py-0.5 bg-purple-500/20 text-purple-400 text-[10px] font-bold rounded uppercase">Team Task</span>
+                                  )}
+                                  <span className={cn(
+                                    "px-2 py-0.5 text-[10px] font-bold rounded uppercase",
+                                    task.urgency === 'MOST_URGENT' ? "bg-red-500/20 text-red-400" : 
+                                    task.urgency === 'URGENT' ? "bg-yellow-500/20 text-yellow-400" : "bg-blue-500/20 text-blue-400"
+                                  )}>
+                                    {task.urgency || 'REGULAR'}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-gray-400">
+                                  Officer: <span className="text-white font-medium">{creator?.name || task.createdBy}</span> ({task.createdBy})
+                                </p>
+                                <p className="text-xs text-gray-400 mt-0.5">
+                                  {task.workType === 'TEAM' ? 'Technicians: ' : 'Technician: '}
+                                  <span className="text-amber-300 font-medium">{techDisplay || 'Not assigned'}</span>
+                                </p>
+                              </div>
+                              <div className="flex flex-col items-end gap-1">
+                                {task.status === 'REQUESTED' ? (
+                                  <span className="px-2 py-1 bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 text-[10px] font-bold rounded uppercase">
+                                    Awaiting Supervisor
+                                  </span>
+                                ) : task.status === 'RUNNING' ? (
+                                  <span className="px-2 py-1 bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-bold rounded uppercase">
+                                    Running
+                                  </span>
+                                ) : task.status === 'COMPLETED' ? (
+                                  <span className="px-2 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold rounded uppercase">
+                                    {canViewPoints ? 'Completed (Pending Points)' : 'Completed (Pending Review)'}
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-1 bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] font-bold rounded uppercase">
+                                    Recommended
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-4">
+                              <div className="flex items-center gap-4">
+                                {canViewPoints && (
+                                  <div className="flex-1">
+                                    <label className="text-[10px] text-gray-500 uppercase font-bold mb-1 block">Assign Points (1-3)</label>
+                                    <div className="flex gap-2">
+                                      {[1, 2, 3].map(p => (
+                                        <button
+                                          key={p}
+                                          type="button"
+                                          onClick={() => {
+                                            setRecPoints(prev => ({ ...prev, [task.id]: p }));
+                                            handleUpdateTask(task.id, { points: p });
+                                          }}
+                                          className={cn(
+                                            "flex-1 py-2 rounded-lg text-xs font-bold transition-all",
+                                            assignedPoint === p ? "bg-blue-600 text-white shadow-md shadow-blue-500/30" : "bg-white/5 text-gray-400 hover:bg-white/10"
+                                          )}
+                                        >
+                                          {p} Point{p > 1 ? 's' : ''}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="flex-1">
+                                  <label className="text-[10px] text-gray-500 uppercase font-bold mb-1 block">Set Deadline</label>
+                                  <input 
+                                    type="date"
+                                    value={currentDeadline}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setRecDeadlines(prev => ({ ...prev, [task.id]: val }));
+                                      handleUpdateTask(task.id, { engineer_deadline: val });
+                                    }}
+                                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none"
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleApproveRequest(task.id, assignedPoint, currentDeadline)}
+                                  className="flex-1 py-2.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-green-500/20"
+                                >
+                                  {canViewPoints ? (
+                                    task.status === 'COMPLETED' ? `Recommend Points & Finalize (+${assignedPoint} Pts)` :
+                                    task.status === 'REQUESTED' ? `Recommend Points (${assignedPoint} Pts)` :
+                                    `Approve & Start (+${assignedPoint} Pts)`
+                                  ) : (
+                                    task.status === 'COMPLETED' ? 'Recommend & Finalize' :
+                                    task.status === 'REQUESTED' ? 'Approve Request' :
+                                    'Approve & Start'
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRejectTaskId(task.id);
+                                    setIsRejectModalOpen(true);
+                                  }}
+                                  className="px-4 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-500 text-xs font-bold rounded-xl transition-all"
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            </div>
+                          </GlassCard>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between">
+                <h1 className="text-3xl font-bold">Task Dashboard</h1>
+                <div className="flex gap-3">
+                  {user?.role === 'SUPER_ADMIN' && (
+                    <>
+                      <button 
+                        onClick={() => fileInputRef.current?.click()}
+                        className="bg-white/5 hover:bg-white/10 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-white/10"
+                      >
+                        <Upload size={20} />
+                        Restore System
+                      </button>
+                      <button 
+                        onClick={handleBackup}
+                        className="bg-white/5 hover:bg-white/10 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-white/10"
+                      >
+                        <Download size={20} />
+                        Backup System
+                      </button>
+                    </>
+                  )}
+                  <button className="p-3 bg-white/5 border border-white/10 rounded-xl text-gray-400 hover:text-white transition-all">
+                    <Filter size={20} />
+                  </button>
+                  {user?.role !== 'TECHNICIAN' && (
+                    <>
+                      <button 
+                        onClick={() => {
+                          setEditingTask(null);
+                          setNewTask({ 
+                            title: '', 
+                            model: 'Portable', 
+                            details: '', 
+                            urgency: 'REGULAR', 
+                            assignedTo: '', 
+                            deadline: '', 
+                            points: 1, 
+                            customStartTime: '', 
+                            estimatedDuration: '',
+                            workType: 'SINGLE',
+                            assignedTechnicians: []
+                          });
+                          setSelectedTechs([]);
+                          setIsTaskModalOpen(true);
+                        }}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
+                      >
+                        <Plus size={20} />
+                        Quick Add Task
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setEditingTask(null);
+                          setNewTask({ 
+                            title: '', 
+                            model: 'Portable', 
+                            details: '', 
+                            urgency: 'REGULAR', 
+                            assignedTo: '', 
+                            deadline: '', 
+                            points: 1, 
+                            customStartTime: '', 
+                            estimatedDuration: '',
+                            workType: 'SINGLE',
+                            assignedTechnicians: []
+                          });
+                          setSelectedTechs([]);
+                          setIsTaskModalOpen(true);
+                        }}
+                        className="bg-white/5 hover:bg-white/10 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-white/10"
+                      >
+                        <Plus size={20} />
+                        Create Task
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-4 items-center bg-white/5 p-4 rounded-2xl border border-white/10">
+                <div className="flex-1 min-w-[200px] relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
+                  <input
+                    type="text"
+                    placeholder="Search Task Title/Keyword..."
+                    value={globalFilters.search}
+                    onChange={(e) => setGlobalFilters({...globalFilters, search: e.target.value})}
+                    className="w-full bg-black/20 border border-white/10 rounded-xl pl-10 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5 bg-black/20 border border-white/10 rounded-xl px-3 py-1.5">
+                  <Calendar size={14} className="text-amber-400 shrink-0" />
+                  <span className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Month:</span>
+                  <select
+                    value={globalFilters.selectedMonth}
+                    onChange={(e) => {
+                      const m = e.target.value;
+                      if (m === 'ALL') {
+                        setGlobalFilters(prev => ({
+                          ...prev,
+                          selectedMonth: 'ALL',
+                          startDate: '',
+                          endDate: ''
+                        }));
+                      } else {
+                        const info = getRealtimeCurrentDate();
+                        setGlobalFilters(prev => ({
+                          ...prev,
+                          selectedMonth: m,
+                          startDate: `${m}-01`,
+                          endDate: info.lastDayOfMonth(m)
+                        }));
+                      }
+                    }}
+                    className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
+                    title="Filter by Month (Defaults to Realtime Running Month)"
+                  >
+                    {availableMonths.map(m => (
+                      <option key={m} value={m} className="bg-[#0f0f12] text-white">
+                        {m === runningMonthKey ? `${formatMonthYearLabel(m)} (Running Month)` : formatMonthYearLabel(m)}
+                      </option>
+                    ))}
+                    <option value="ALL" className="bg-[#0f0f12] text-white">All Months / All Time</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-500 uppercase font-bold">From:</span>
+                  <input
+                    type="date"
+                    value={globalFilters.startDate}
+                    onChange={(e) => {
+                      const newStart = e.target.value;
+                      setGlobalFilters(prev => ({
+                        ...prev,
+                        startDate: newStart,
+                        selectedMonth: newStart && prev.selectedMonth !== 'ALL' && newStart.slice(0, 7) !== prev.selectedMonth ? 'ALL' : prev.selectedMonth
+                      }));
+                    }}
+                    className="bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                    title="Filter Start Date (From Date)"
+                  />
+                  <span className="text-[10px] text-gray-500 uppercase font-bold">To:</span>
+                  <input
+                    type="date"
+                    value={globalFilters.endDate}
+                    onChange={(e) => {
+                      const newEnd = e.target.value;
+                      setGlobalFilters(prev => ({
+                        ...prev,
+                        endDate: newEnd,
+                        selectedMonth: newEnd && prev.selectedMonth !== 'ALL' && newEnd.slice(0, 7) !== prev.selectedMonth ? 'ALL' : prev.selectedMonth
+                      }));
+                    }}
+                    className="bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                    title="Filter End Date (To Date)"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const info = getRealtimeCurrentDate();
+                      setGlobalFilters(prev => ({
+                        ...prev,
+                        selectedMonth: info.monthKey,
+                        startDate: info.todayStr,
+                        endDate: info.todayStr
+                      }));
+                    }}
+                    className={cn(
+                      "px-2.5 py-1.5 rounded-xl border text-[11px] font-bold transition-all whitespace-nowrap",
+                      globalFilters.startDate === getRealtimeCurrentDate().todayStr && globalFilters.endDate === getRealtimeCurrentDate().todayStr
+                        ? "bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-500/30"
+                        : "bg-white/5 hover:bg-white/10 text-blue-400 border-white/10"
+                    )}
+                    title="Filter for Realtime Today"
+                  >
+                    Today
+                  </button>
+                </div>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsFilterModelOpen(!isFilterModelOpen)}
+                    className="bg-black/20 border border-white/10 rounded-xl px-4 py-2 text-sm text-white flex items-center gap-2 min-w-[140px] justify-between focus:outline-none"
+                  >
+                    <span className="truncate">{globalFilters.model === 'ALL' ? 'All Models' : globalFilters.model}</span>
+                    <ChevronDown size={14} className={cn("transition-transform", isFilterModelOpen && "rotate-180")} />
+                  </button>
+                  
+                  {isFilterModelOpen && (
+                    <div className="absolute z-50 w-full mt-2 bg-[#0f0f12] border border-white/10 rounded-xl shadow-2xl overflow-hidden">
+                      <div className="max-h-[200px] overflow-y-auto custom-scrollbar p-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGlobalFilters({...globalFilters, model: 'ALL'});
+                            setIsFilterModelOpen(false);
+                          }}
+                          className={cn(
+                            "w-full text-left px-4 py-2 rounded-lg text-xs transition-colors",
+                            globalFilters.model === 'ALL' ? "bg-blue-600 text-white" : "hover:bg-white/5 text-gray-400 hover:text-white"
+                          )}
+                        >
+                          All Models
+                        </button>
+                        {models.map(m => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => {
+                              setGlobalFilters({...globalFilters, model: m});
+                              setIsFilterModelOpen(false);
+                            }}
+                            className={cn(
+                              "w-full text-left px-4 py-2 rounded-lg text-xs transition-colors",
+                              globalFilters.model === m ? "bg-blue-600 text-white" : "hover:bg-white/5 text-gray-400 hover:text-white"
+                            )}
+                          >
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <select
+                  value={globalFilters.workType}
+                  onChange={(e) => setGlobalFilters({...globalFilters, workType: e.target.value})}
+                  className="bg-black/20 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:outline-none"
+                >
+                  <option value="ALL">All Types</option>
+                  <option value="SINGLE">Single Work</option>
+                  <option value="TEAM">Team Work</option>
+                </select>
+                <select
+                  value={globalFilters.assignedUser || 'ALL'}
+                  onChange={(e) => setGlobalFilters({...globalFilters, assignedUser: e.target.value})}
+                  className="bg-black/20 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:outline-none"
+                  title="Filter by User / Team"
+                >
+                  <option value="ALL">All Users</option>
+                  <option value="MY_SCOPE">My Tasks & Team</option>
+                  <optgroup label="Staff Members">
+                    {staffList.map(s => (
+                      <option key={s.id} value={s.employeeId || s.id} className="bg-[#0f0f12]">
+                        {s.name} ({s.employeeId}) - {s.role}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+                <button 
+                  onClick={() => {
+                    const info = getRealtimeCurrentDate();
+                    setGlobalFilters({
+                      search: '',
+                      startDate: info.firstDayOfMonth,
+                      endDate: info.lastDayOfMonth(info.monthKey),
+                      selectedMonth: info.monthKey,
+                      model: 'ALL',
+                      workType: 'ALL',
+                      assignedUser: 'ALL'
+                    });
+                  }}
+                  className="p-2 text-gray-500 hover:text-red-400 transition-colors"
+                  title="Clear Filters to Realtime Defaults"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="w-full flex items-center gap-3 sm:gap-4 border-b border-white/10 pb-4 overflow-x-auto scrollbar-thin px-2 sm:px-4">
+                {(['ALL', 'PENDING', 'RUNNING', 'COMPLETED', 'Hold Task'] as const).map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => setActiveTaskTab(status)}
+                    className={cn(
+                      "px-6 sm:px-8 py-2.5 sm:py-3 rounded-xl text-sm font-bold transition-all relative flex items-center gap-2 whitespace-nowrap",
+                      activeTaskTab === status ? "text-blue-400 bg-blue-500/10 border border-blue-500/30" : "text-gray-400 hover:text-gray-200 hover:bg-white/5 border border-transparent"
+                    )}
+                  >
+                    <span>{status}</span>
+                    {activeTaskTab === status && (
+                      <motion.div layoutId="activeTaskTab" className="absolute bottom-[-17px] left-0 right-0 h-1 bg-blue-500 rounded-full" />
+                    )}
+                    <span className={cn(
+                      "ml-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold",
+                      activeTaskTab === status ? "bg-blue-500 text-white" : "bg-white/10 text-gray-400"
+                    )}>
+                      {status === 'ALL' 
+                        ? filteredTasks.length 
+                        : status === 'Hold Task' 
+                          ? filteredTasks.filter(t => t.status === 'HOLD').length 
+                          : filteredTasks.filter(t => t.status === status).length}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <GlassCard>
+                <div className="flex justify-between items-center p-4 border-b border-white/5">
+                  <div className="flex items-center gap-4">
+                    <span className="text-xs text-gray-400 uppercase tracking-widest font-bold">Show:</span>
+                    <select
+                      value={taskLimit}
+                      onChange={(e) => setTaskLimit(Number(e.target.value))}
+                      className="bg-black/20 border border-white/10 rounded-lg px-3 py-1 text-xs text-white focus:outline-none"
+                    >
+                      <option value={100}>100</option>
+                      <option value={500}>500</option>
+                      <option value={1000}>1000</option>
+                    </select>
+                  </div>
+                    {activeTaskTab === 'COMPLETED' && (
+                    <div className="flex items-center gap-6">
+                      <div className="flex flex-col items-end">
+                        <span className="text-[10px] text-gray-500 uppercase tracking-tighter">Total Tasks</span>
+                        <span className="text-sm font-bold text-blue-400">{filteredTasks.filter(t => t.status === 'COMPLETED').length}</span>
+                      </div>
+                      {canViewPoints && (
+                        <div className="flex flex-col items-end">
+                          <span className="text-[10px] text-gray-500 uppercase tracking-tighter">Total Points</span>
+                          <span className="text-sm font-bold text-green-400">
+                            {filteredTasks.filter(t => t.status === 'COMPLETED').reduce((sum, t) => sum + (Number(t.points) || 0), 0)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="overflow-x-auto max-h-[620px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                  <table className="w-full text-left border-collapse table-auto">
+                    <thead className="sticky top-0 bg-[#0e0e12] z-20 shadow-md border-b border-white/15">
+                      <tr className="text-gray-100 text-[13px] font-bold tracking-wider whitespace-nowrap">
+                        <th className="px-3 py-3.5 text-left text-gray-100 font-bold min-w-[85px]">Task ID</th>
+                        <th className="px-3 py-3.5 text-left text-gray-100 font-bold min-w-[170px] max-w-[250px]">Title & Assigned</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[105px]">Concern</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[90px]">Model</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[80px]">Urgency</th>
+                        {canViewPoints && (
+                          <th className="px-2 py-3.5 text-center text-gray-100 font-bold min-w-[60px]">Points</th>
+                        )}
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[95px]">Technician Type</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[105px]">Start Time</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[110px]">Complete Time</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[90px]">Status</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[125px]">Progress</th>
+                        <th className="px-2.5 py-3.5 text-left text-gray-100 font-bold min-w-[90px]">Deadline</th>
+                        <th className="px-2.5 py-3.5 text-center text-gray-100 font-bold min-w-[85px]">Fix It</th>
+                        <th className="px-3 py-3.5 text-right text-gray-100 font-bold min-w-[170px]">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {filteredTasks
+                        .filter(t => activeTaskTab === 'ALL' || (activeTaskTab === 'Hold Task' ? t.status === 'HOLD' : t.status === activeTaskTab))
+                        .slice(0, taskLimit)
+                        .map(task => (
+                        <tr key={task.id} className="hover:bg-white/[0.04] transition-colors group">
+                          <td className="px-3 py-3 text-xs font-mono text-blue-400 font-bold whitespace-nowrap">{task.taskId}</td>
+                          <td className="px-3 py-3 min-w-[170px] max-w-[250px]">
+                            <p className="text-sm font-bold text-white group-hover:text-blue-400 transition-colors truncate" title={task.title}>{task.title}</p>
+                            <p className="text-[11px] text-gray-400 mt-0.5 truncate">
+                              <span className="text-gray-500">Assigned to: </span>
+                              {(() => {
+                                if (task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.length > 0) {
+                                  return (
+                                    <span className="text-blue-300 font-medium">
+                                      Team ({task.assignedTechnicians.length} techs): {task.assignedTechnicians.map(t => t.name || t.employeeId).join(', ')}
+                                    </span>
+                                  );
+                                }
+                                const assignee = staffList.find(s => s.id === task.assignedTo || s.name.toLowerCase() === (task.assignedTo || '').toLowerCase() || s.employeeId === task.assignedTo);
+                                if (assignee) {
+                                  return <span className="text-blue-300 font-medium">{assignee.name} ({assignee.employeeId})</span>;
+                                }
+                                return task.assignedTo || 'Unassigned';
+                              })()}
+                            </p>
+                          </td>
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            {(() => {
+                              const officer = staffList.find(s => s.employeeId === task.assignedBy || s.id === task.assignedBy);
+                              if (officer) {
+                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px]" title={officer.name}>{officer.name}</span>;
+                              }
+                              const creator = staffList.find(s => s.employeeId === task.createdBy || s.id === task.createdBy);
+                              if (creator) {
+                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px]" title={creator.name}>{creator.name}</span>;
+                              }
+                              const assignee = staffList.find(s => s.id === task.assignedTo || s.name.toLowerCase() === (task.assignedTo || '').toLowerCase());
+                              if (assignee?.role === 'TECHNICIAN') {
+                                const supervisor = staffList.find(s => s.id === assignee.supervisorId || s.employeeId === assignee.supervisorId);
+                                return <span className="text-xs text-blue-400 font-medium truncate block max-w-[110px]" title={supervisor?.name}>{supervisor?.name || 'N/A'}</span>;
+                              }
+                              return <span className="text-xs text-gray-500">N/A</span>;
+                            })()}
+                          </td>
+                          <td className="px-2.5 py-3 text-xs font-semibold text-gray-200 whitespace-nowrap">{task.model}</td>
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            <span className={cn(
+                              "text-[10px] font-bold px-2 py-0.5 rounded-full inline-block",
+                              task.urgency === 'MOST_URGENT' ? "bg-red-500/20 text-red-400 border border-red-500/30" : 
+                              task.urgency === 'URGENT' ? "bg-amber-500/20 text-amber-400 border border-amber-500/30" : "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                            )}>
+                              {task.urgency}
+                            </span>
+                          </td>
+                          {canViewPoints && (
+                            <td className="px-2 py-3 text-center whitespace-nowrap">
+                              <span className="text-sm font-black text-blue-400">{task.points || 0}</span>
+                            </td>
+                          )}
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            {getTaskTechnicianType(task) === 'Hired' ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                                <Users size={11} className="text-purple-400" /> Hired
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                <UserCheck size={11} className="text-emerald-400" /> Own
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            {(() => {
+                              const sTime = task.customStartTime || task.startedAt || task.createdAt;
+                              if (!sTime) return <span className="text-gray-500 text-xs">-</span>;
+                              const d = new Date(sTime);
+                              if (isNaN(d.getTime())) return <span className="text-gray-300 text-xs">{sTime}</span>;
+                              return (
+                                <div className="flex flex-col">
+                                  <span className="text-xs font-semibold text-gray-200">
+                                    {d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                                  </span>
+                                  <span className="text-[10px] text-gray-400 font-mono">
+                                    {d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                  </span>
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            {(() => {
+                              const cTime = task.actualCompletionTime || task.completedAt;
+                              if (!cTime) {
+                                return (
+                                  <span className={cn(
+                                    "text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap",
+                                    task.status === 'RUNNING' ? "text-amber-400 bg-amber-400/10 border border-amber-400/20" : 
+                                    task.status === 'HOLD' ? "text-red-400 bg-red-400/10 border border-red-400/20" : "text-gray-500"
+                                  )}>
+                                    {task.status === 'RUNNING' ? 'In Progress' : task.status === 'HOLD' ? 'On Hold' : '-'}
+                                  </span>
+                                );
+                              }
+                              const d = new Date(cTime);
+                              if (isNaN(d.getTime())) return <span className="text-gray-300 text-xs">{cTime}</span>;
+                              return (
+                                <div className="flex flex-col">
+                                  <span className="text-xs font-semibold text-green-400">
+                                    {d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                                  </span>
+                                  <span className="text-[10px] text-green-300/80 font-mono">
+                                    {d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                  </span>
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            <span className={cn(
+                              "text-[11px] px-2 py-0.5 rounded-full font-bold inline-block",
+                              task.status === 'RUNNING' ? "bg-amber-500/20 text-amber-400 border border-amber-500/30" : 
+                              task.status === 'COMPLETED' ? "bg-green-500/20 text-green-400 border border-green-500/30" :
+                              task.status === 'HOLD' ? "bg-red-500/20 text-red-400 border border-red-500/30" :
+                              "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                            )}>
+                              {task.status}
+                            </span>
+                            {task.status === 'HOLD' && task.remarks && (
+                              <p className="text-[10px] text-red-400 mt-0.5 italic max-w-[130px] truncate" title={task.remarks}>
+                                Reason: {task.remarks}
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            <div className="w-[125px]">
+                              <CountdownTimer task={task} />
+                            </div>
+                          </td>
+                          <td className="px-2.5 py-3 whitespace-nowrap">
+                            <span className="text-xs font-bold text-red-400 uppercase tracking-tight">
+                              {task.engineer_deadline ? new Date(task.engineer_deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : (task.deadline ? new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A')}
+                            </span>
+                          </td>
+                          <td className="px-2.5 py-3 text-center whitespace-nowrap">
+                            {task.status === 'COMPLETED' ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold bg-green-500/15 text-green-400 border border-green-500/25">
+                                <CheckCircle2 size={12} /> Fixed
+                              </span>
+                            ) : canFixTask(task, user) ? (
+                              <button
+                                onClick={() => {
+                                  setStatusUpdateTask(task);
+                                  setStatusUpdateData({
+                                    progress: 100,
+                                    status: 'COMPLETED',
+                                    remarks: task.remarks ? `${task.remarks} - Fixed` : 'Issue resolved / Fixed',
+                                    actualCompletionTime: formatDateForInput(new Date().toISOString(), 'datetime-local')
+                                  });
+                                  setIsStatusUpdateModalOpen(true);
+                                }}
+                                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 hover:text-amber-200 border border-amber-500/30 rounded-lg text-[11px] font-bold transition-all shadow-sm inline-flex items-center gap-1 cursor-pointer"
+                                title="Quick Fix / Complete this Task"
+                              >
+                                <Wrench size={12} /> Fix It
+                              </button>
+                            ) : (
+                              <span className="text-gray-600 text-xs">-</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {canUpdateTaskStatus(task, user) && (
+                                <button 
+                                  onClick={() => {
+                                    setStatusUpdateTask(task);
+                                    setStatusUpdateData({ progress: task.progress, status: task.status, remarks: task.remarks || '', actualCompletionTime: '' });
+                                    setIsStatusUpdateModalOpen(true);
+                                  }}
+                                  className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-[10px] font-black uppercase tracking-wider transition-all shadow-md shadow-blue-500/20 cursor-pointer"
+                                >
+                                  Update Status
+                                </button>
+                              )}
+                              {canEditTask(task, user) && (
+                                <button 
+                                  onClick={() => {
+                                    setEditingTask(task);
+                                    setNewTask({
+                                      title: task.title,
+                                      model: task.model,
+                                      details: task.details,
+                                      urgency: task.urgency,
+                                      assignedTo: task.assignedTo,
+                                      deadline: task.deadline,
+                                      points: task.points || 10,
+                                      customStartTime: formatDateForInput(task.customStartTime, 'datetime-local'),
+                                      estimatedDuration: task.estimatedDuration || '',
+                                      workType: task.workType || 'SINGLE',
+                                      assignedTechnicians: task.assignedTechnicians || []
+                                    });
+                                    setSelectedTechs(task.assignedTechnicians || []);
+                                    setIsTaskModalOpen(true);
+                                  }}
+                                  className="p-1.5 hover:bg-white/10 rounded-lg text-blue-400 transition-all cursor-pointer"
+                                  title="Edit Task"
+                                >
+                                  <Edit2 size={15} />
+                                </button>
+                              )}
+                              {canDeleteTask(task, user) && (
+                                <button 
+                                  onClick={() => setTaskToDelete(task.id)}
+                                  className="p-1.5 hover:bg-white/10 rounded-lg text-red-400 transition-all cursor-pointer"
+                                  title="Delete Task"
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              )}
+                              {canViewTask(task, user) && (
+                                <button 
+                                  onClick={() => {
+                                    setSelectedTask(task);
+                                    setTaskRemarks(task.remarks || '');
+                                    setAssignToTech('');
+                                    setIsTaskDetailsModalOpen(true);
+                                  }}
+                                  className="px-2 py-1 hover:bg-white/10 rounded-lg text-gray-300 hover:text-white transition-all flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer"
+                                >
+                                  <span>View Task</span>
+                                  <ChevronRight size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {activeTaskTab === 'COMPLETED' && (
+                      <tfoot className="sticky bottom-0 bg-[#0a0a0c] z-20 border-t border-white/20 shadow-[0_-4px_10px_rgba(0,0,0,0.5)]">
+                        <tr className="bg-blue-600/10">
+                          <td colSpan={5} className="px-4 py-5 text-sm font-black text-white uppercase tracking-widest">
+                            TOTAL SUMMARY
+                          </td>
+                          {canViewPoints && (
+                            <td className="px-4 py-5">
+                              <div className="flex flex-col">
+                                <span className="text-[8px] text-gray-500 uppercase font-bold">Total Points</span>
+                                <span className="text-base font-black text-green-400">
+                                  {filteredTasks.filter(t => t.status === 'COMPLETED').reduce((sum, t) => sum + (Number(t.points) || 0), 0)}
+                                </span>
+                              </div>
+                            </td>
+                          )}
+                          <td colSpan={canViewPoints ? 8 : 8} className="px-4 py-5">
+                             <div className="flex flex-col">
+                              <span className="text-[8px] text-gray-500 uppercase font-bold">Total Tasks</span>
+                              <span className="text-base font-black text-blue-400">
+                                {filteredTasks.filter(t => t.status === 'COMPLETED').length}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </GlassCard>
+            </div>
+          )}
+
+          {activeTab === 'reports' && (
+            <div className="space-y-6">
+              <h1 className="text-3xl font-bold">Reporting Panel</h1>
+              
+              <div className="flex flex-wrap gap-4 items-center bg-white/5 p-4 rounded-2xl border border-white/10">
+                <div className="flex-1 min-w-[200px] relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
+                  <input
+                    type="text"
+                    placeholder="Search Task Title/Keyword..."
+                    value={globalFilters.search}
+                    onChange={(e) => setGlobalFilters({...globalFilters, search: e.target.value})}
+                    className="w-full bg-black/20 border border-white/10 rounded-xl pl-10 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5 bg-black/20 border border-white/10 rounded-xl px-3 py-1.5">
+                  <Calendar size={14} className="text-amber-400 shrink-0" />
+                  <span className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Month:</span>
+                  <select
+                    value={globalFilters.selectedMonth}
+                    onChange={(e) => {
+                      const m = e.target.value;
+                      if (m === 'ALL') {
+                        setGlobalFilters(prev => ({
+                          ...prev,
+                          selectedMonth: 'ALL',
+                          startDate: '',
+                          endDate: ''
+                        }));
+                      } else {
+                        const info = getRealtimeCurrentDate();
+                        setGlobalFilters(prev => ({
+                          ...prev,
+                          selectedMonth: m,
+                          startDate: `${m}-01`,
+                          endDate: info.lastDayOfMonth(m)
+                        }));
+                      }
+                    }}
+                    className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
+                    title="Filter by Month (Defaults to Realtime Running Month)"
+                  >
+                    {availableMonths.map(m => (
+                      <option key={m} value={m} className="bg-[#0f0f12] text-white">
+                        {m === runningMonthKey ? `${formatMonthYearLabel(m)} (Running Month)` : formatMonthYearLabel(m)}
+                      </option>
+                    ))}
+                    <option value="ALL" className="bg-[#0f0f12] text-white">All Months / All Time</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-500 uppercase font-bold">From:</span>
+                  <input
+                    type="date"
+                    value={globalFilters.startDate}
+                    onChange={(e) => {
+                      const newStart = e.target.value;
+                      setGlobalFilters(prev => ({
+                        ...prev,
+                        startDate: newStart,
+                        selectedMonth: newStart && prev.selectedMonth !== 'ALL' && newStart.slice(0, 7) !== prev.selectedMonth ? 'ALL' : prev.selectedMonth
+                      }));
+                    }}
+                    className="bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                    title="Filter Start Date (From Date)"
+                  />
+                  <span className="text-[10px] text-gray-500 uppercase font-bold">To:</span>
+                  <input
+                    type="date"
+                    value={globalFilters.endDate}
+                    onChange={(e) => {
+                      const newEnd = e.target.value;
+                      setGlobalFilters(prev => ({
+                        ...prev,
+                        endDate: newEnd,
+                        selectedMonth: newEnd && prev.selectedMonth !== 'ALL' && newEnd.slice(0, 7) !== prev.selectedMonth ? 'ALL' : prev.selectedMonth
+                      }));
+                    }}
+                    className="bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                    title="Filter End Date (To Date)"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const info = getRealtimeCurrentDate();
+                      setGlobalFilters(prev => ({
+                        ...prev,
+                        selectedMonth: info.monthKey,
+                        startDate: info.todayStr,
+                        endDate: info.todayStr
+                      }));
+                    }}
+                    className={cn(
+                      "px-2.5 py-1.5 rounded-xl border text-[11px] font-bold transition-all whitespace-nowrap",
+                      globalFilters.startDate === getRealtimeCurrentDate().todayStr && globalFilters.endDate === getRealtimeCurrentDate().todayStr
+                        ? "bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-500/30"
+                        : "bg-white/5 hover:bg-white/10 text-blue-400 border-white/10"
+                    )}
+                    title="Filter for Realtime Today"
+                  >
+                    Today
+                  </button>
+                </div>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsFilterModelOpen(!isFilterModelOpen)}
+                    className="bg-black/20 border border-white/10 rounded-xl px-4 py-2 text-sm text-white flex items-center gap-2 min-w-[140px] justify-between focus:outline-none"
+                  >
+                    <span className="truncate">{globalFilters.model === 'ALL' ? 'All Models' : globalFilters.model}</span>
+                    <ChevronDown size={14} className={cn("transition-transform", isFilterModelOpen && "rotate-180")} />
+                  </button>
+                  
+                  {isFilterModelOpen && (
+                    <div className="absolute z-50 w-full mt-2 bg-[#0f0f12] border border-white/10 rounded-xl shadow-2xl overflow-hidden">
+                      <div className="max-h-[200px] overflow-y-auto custom-scrollbar p-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGlobalFilters({...globalFilters, model: 'ALL'});
+                            setIsFilterModelOpen(false);
+                          }}
+                          className={cn(
+                            "w-full text-left px-4 py-2 rounded-lg text-xs transition-colors",
+                            globalFilters.model === 'ALL' ? "bg-blue-600 text-white" : "hover:bg-white/5 text-gray-400 hover:text-white"
+                          )}
+                        >
+                          All Models
+                        </button>
+                        {models.map(m => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => {
+                              setGlobalFilters({...globalFilters, model: m});
+                              setIsFilterModelOpen(false);
+                            }}
+                            className={cn(
+                              "w-full text-left px-4 py-2 rounded-lg text-xs transition-colors",
+                              globalFilters.model === m ? "bg-blue-600 text-white" : "hover:bg-white/5 text-gray-400 hover:text-white"
+                            )}
+                          >
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <select
+                  value={globalFilters.workType}
+                  onChange={(e) => setGlobalFilters({...globalFilters, workType: e.target.value})}
+                  className="bg-black/20 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:outline-none"
+                >
+                  <option value="ALL">All Types</option>
+                  <option value="SINGLE">Single Work</option>
+                  <option value="TEAM">Team Work</option>
+                </select>
+                <select
+                  value={globalFilters.assignedUser || 'ALL'}
+                  onChange={(e) => setGlobalFilters({...globalFilters, assignedUser: e.target.value})}
+                  className="bg-black/20 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:outline-none"
+                  title="Filter by User / Team"
+                >
+                  <option value="ALL">All Users</option>
+                  <option value="MY_SCOPE">My Tasks & Team</option>
+                  <optgroup label="Staff Members">
+                    {staffList.map(s => (
+                      <option key={s.id} value={s.employeeId || s.id} className="bg-[#0f0f12]">
+                        {s.name} ({s.employeeId}) - {s.role}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+                <button 
+                  onClick={() => {
+                    const info = getRealtimeCurrentDate();
+                    setGlobalFilters({
+                      search: '',
+                      startDate: info.firstDayOfMonth,
+                      endDate: info.lastDayOfMonth(info.monthKey),
+                      selectedMonth: info.monthKey,
+                      model: 'ALL',
+                      workType: 'ALL',
+                      assignedUser: 'ALL'
+                    });
+                  }}
+                  className="p-2 text-gray-500 hover:text-red-400 transition-colors"
+                  title="Clear Filters to Realtime Defaults"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <ReportingPanel tasks={filteredTasks} staff={staffList} user={user} />
+            </div>
+          )}
+
+          {activeTab === 'daily_task' && (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold">Daily Task List</h1>
+                  <p className="text-gray-500 text-sm mt-1">Today's work plan for all assigned technicians</p>
+                </div>
+                <div className="flex gap-4">
+                  <GlassCard className="px-6 py-3 flex items-center gap-3">
+                    <Calendar className="text-blue-400 w-6 h-6" />
+                    <div>
+                      <p className="text-[10px] text-gray-500 uppercase">Today's Date</p>
+                      <p className="text-sm font-black text-red-500">{new Date().toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}</p>
+                    </div>
+                  </GlassCard>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-6">
+                {staffList
+                  .filter(s => s.role === 'TECHNICIAN' && isStaffInScope(s))
+                  .map(tech => {
+                    const today = new Date().toLocaleDateString('en-CA');
+                    const techTasks = tasks.filter(t => {
+                      const isAssigned = t.assignedTo === tech.name || 
+                        (t.workType === 'TEAM' && t.assignedTechnicians?.some(at => at.employeeId === tech.employeeId));
+                      // Sync with Active Work: Include all RUNNING, HOLD, DELAYED tasks + any non-completed tasks for today
+                      const isOngoing = t.status === 'RUNNING' || t.status === 'HOLD' || t.status === 'DELAYED';
+                      const isForToday = Boolean(typeof t?.deadline === 'string' && t.deadline.startsWith(today));
+                      return isAssigned && t.status !== 'COMPLETED' && (isOngoing || isForToday);
+                    });
+
+                    if (techTasks.length === 0) return null;
+
+                    return (
+                      <div key={tech.id} className="bg-white rounded-3xl overflow-hidden shadow-2xl border border-gray-100">
+                        <div className="bg-blue-600 p-6 flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center font-bold text-white text-xl">
+                              {tech.name[0]}
+                            </div>
+                            <div>
+                              <h3 className="text-2xl font-black text-white">{tech.name}</h3>
+                              <p className="text-blue-100 text-sm font-bold tracking-widest uppercase">{tech.employeeId} • {tech.phone || 'No Number'}</p>
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => exportToWhatsApp(tech)}
+                            className="px-6 py-3 bg-white text-blue-600 hover:bg-blue-50 rounded-xl flex items-center gap-2 text-sm font-black transition-all shadow-xl"
+                          >
+                            <Share2 size={18} />
+                            Share to WhatsApp
+                          </button>
+                        </div>
+
+                        <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-6 bg-gray-50">
+                          {techTasks.map(task => (
+                            <div key={task.id} className="p-6 bg-white rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                              <div className="flex justify-between items-start">
+                                <h4 className="text-xl font-black text-gray-900 leading-tight">{task.title}</h4>
+                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                                  task.urgency === 'MOST_URGENT' ? 'bg-red-100 text-red-600' :
+                                  task.urgency === 'URGENT' ? 'bg-amber-100 text-amber-600' :
+                                  'bg-blue-100 text-blue-600'
+                                }`}>
+                                  {task.urgency}
+                                </span>
+                              </div>
+                              
+                              <div className="grid grid-cols-2 gap-y-3 gap-x-4">
+                                <div>
+                                  <p className="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Model</p>
+                                  <p className="text-sm font-bold text-gray-700">{task.model}</p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Deadline</p>
+                                  <p className="text-sm font-black text-red-500">{new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}</p>
+                                </div>
+                                <div className="col-span-2">
+                                  <p className="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Location/Details</p>
+                                  <p className="text-sm font-medium text-gray-600 line-clamp-2">{task.details}</p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                
+                {staffList.filter(s => s.role === 'TECHNICIAN' && isStaffInScope(s)).every(tech => {
+                  const today = new Date().toLocaleDateString('en-CA');
+                  return tasks.filter(t => {
+                    const isAssigned = t.assignedTo === tech.name || 
+                      (t.workType === 'TEAM' && t.assignedTechnicians?.some(at => at.employeeId === tech.employeeId));
+                    const isRunning = t.status === 'RUNNING';
+                    const isForToday = Boolean(typeof t?.deadline === 'string' && t.deadline.startsWith(today));
+                    return isAssigned && t.status !== 'COMPLETED' && (isRunning || isForToday);
+                  }).length === 0;
+                }) && (
+                  <div className="text-center py-20 bg-white/5 rounded-3xl border border-dashed border-white/10">
+                    <ClipboardList className="w-16 h-16 text-gray-600 mx-auto mb-4" />
+                    <h3 className="text-xl font-bold text-gray-400">No tasks assigned for today</h3>
+                    <p className="text-gray-500 mt-2">All technicians are currently free or tasks are completed.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {['activity_logs', 'active_sessions', 'suspicious_logins', 'locked_devices', 'audit_trail'].includes(activeTab) && (
+            <SecurityCenter 
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              activityLogs={activityLogs}
+              activeSessions={activeSessions}
+              suspiciousLogins={suspiciousLogins}
+              lockedDevices={lockedDevices}
+              lockedAccounts={lockedAccounts}
+              auditLogs={auditLogs}
+              onForceLogout={handleForceLogout}
+              onLockDevice={handleLockDevice}
+              onUnlockDevice={handleUnlockDevice}
+              onUnlockAccount={handleUnlockAccount}
+            />
+          )}
+
+          {activeTab === 'other_team_requests' && (
+            <div className="space-y-8">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h1 className="text-4xl font-bold mb-2">Team Requests & Approvals</h1>
+                  <p className="text-gray-400">Review technician requests from other officers. Approving immediately starts the task and sets technicians to Working for the requested hours.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-bold rounded-full">
+                    {tasks.filter(isTaskRequestedForMe).length} Pending Approval
+                  </span>
+                </div>
+              </div>
+
+              {/* Incoming Requests Section */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-gray-400">
+                  <Bell size={16} className="text-amber-400" />
+                  <span>Incoming Technician Requests Awaiting Your Approval</span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-6">
+                  {tasks.filter(isTaskRequestedForMe).length === 0 ? (
+                    <GlassCard className="p-12 text-center">
+                      <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <CheckCircle2 size={40} className="text-emerald-500" />
+                      </div>
+                      <h3 className="text-xl font-bold mb-2">No Pending Requests</h3>
+                      <p className="text-gray-400">All technician assignment requests for your team have been processed.</p>
+                    </GlassCard>
+                  ) : (
+                    tasks.filter(isTaskRequestedForMe).map((task, idx) => {
+                      const requester = staffList.find(s => s.employeeId === task.createdBy || s.id === task.createdBy);
+                      
+                      // Identify requested technician(s)
+                      let techDisplay = task.assignedTo;
+                      if (task.workType === 'TEAM' && Array.isArray(task.assignedTechnicians) && task.assignedTechnicians.length > 0) {
+                        techDisplay = task.assignedTechnicians.map((t: any) => t.name || t.employeeId).join(', ');
+                      } else {
+                        const tObj = staffList.find(s => s.id === task.assignedTo || s.employeeId === task.assignedTo);
+                        if (tObj) techDisplay = `${tObj.name} (${tObj.employeeId})`;
+                      }
+
+                      return (
+                        <GlassCard key={task.id} delay={idx * 0.05} className="p-6 border-l-4 border-amber-500">
+                          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                            <div className="flex-1 space-y-3">
+                              <div className="flex items-center gap-3">
+                                <span className="px-3 py-1 bg-blue-500/10 text-blue-400 text-xs font-bold rounded-full uppercase tracking-wider">
+                                  {task.model}
+                                </span>
+                                <span className="text-gray-500 text-xs">{new Date(task.createdAt).toLocaleString()}</span>
+                                <span className={cn(
+                                  "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                                  task.urgency === 'MOST_URGENT' ? "bg-red-500/20 text-red-500" :
+                                  task.urgency === 'URGENT' ? "bg-amber-500/20 text-amber-500" :
+                                  "bg-blue-500/20 text-blue-500"
+                                )}>
+                                  {task.urgency}
+                                </span>
+                                <span className="px-2 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] font-bold uppercase rounded">
+                                  {task.workType === 'TEAM' ? 'Team Work' : 'Single Work'}
+                                </span>
+                              </div>
+
+                              <h3 className="text-2xl font-bold text-white">{task.title}</h3>
+                              <p className="text-gray-300 text-sm">{task.details}</p>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 pt-2">
+                                <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                                  <p className="text-[10px] text-gray-400 uppercase tracking-wider">Requested By</p>
+                                  <p className="text-sm font-semibold text-white truncate">{requester?.name || task.createdBy}</p>
+                                  <p className="text-[10px] text-blue-400">{requester?.role?.replace('_', ' ') || 'Officer'}</p>
+                                </div>
+                                <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                                  <p className="text-[10px] text-gray-400 uppercase tracking-wider">Requested Technician(s)</p>
+                                  <p className="text-sm font-semibold text-amber-400 truncate">{techDisplay}</p>
+                                  <p className="text-[10px] text-gray-400">From Your Team</p>
+                                </div>
+                                <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                                  <p className="text-[10px] text-gray-400 uppercase tracking-wider">Requested Duration</p>
+                                  <p className="text-sm font-semibold text-green-400">
+                                    {task.estimatedDuration ? `${task.estimatedDuration} Mins (${(Number(task.estimatedDuration) / 60).toFixed(1)} Hrs)` : 'Full Shift'}
+                                  </p>
+                                  <p className="text-[10px] text-gray-400">Working Period</p>
+                                </div>
+                                <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                                  <p className="text-[10px] text-gray-400 uppercase tracking-wider">Deadline</p>
+                                  <p className="text-sm font-black text-red-400">
+                                    {new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                                  </p>
+                                  {canViewPoints && (
+                                    <p className="text-[10px] text-gray-400">Points: {task.points || 1}</p>
+                                  )}
+                                </div>
+                              </div>
+
+                              {task.teamApprovals && task.teamApprovals.length > 0 && (
+                                <div className="p-3 bg-white/5 rounded-xl border border-white/10 space-y-2 mt-3">
+                                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                                    Team Approvals Progress ({task.teamApprovals.filter(a => a.status === 'APPROVED').length}/{task.teamApprovals.length} Teams Approved)
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {task.teamApprovals.map((app, aIdx) => (
+                                      <span key={aIdx} className={cn(
+                                        "px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1.5",
+                                        app.status === 'APPROVED' ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" :
+                                        app.status === 'REJECTED' ? "bg-red-500/20 text-red-400 border border-red-500/30" :
+                                        "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                                      )}>
+                                        <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                                        {app.officerName || app.officerId}: {app.status}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex flex-row lg:flex-col items-center gap-3 min-w-[140px]">
+                              <button 
+                                onClick={() => handleApproveRequest(task.id)}
+                                className="w-full px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-all shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 text-sm"
+                              >
+                                <CheckCircle2 size={18} />
+                                {task.teamApprovals && task.teamApprovals.length > 1 && task.teamApprovals.filter(a => a.status === 'PENDING').length > 1 ? 'Approve My Team' : 'Approve & Start'}
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  setRejectTaskId(task.id);
+                                  setRejectRemarks('');
+                                  setIsRejectModalOpen(true);
+                                }}
+                                className="w-full px-5 py-2.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-bold rounded-xl border border-red-600/30 transition-all flex items-center justify-center gap-2 text-sm"
+                              >
+                                <X size={18} />
+                                Reject
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  setSelectedTask(task);
+                                  setIsTaskDetailsModalOpen(true);
+                                }}
+                                className="w-full px-5 py-2 bg-white/5 hover:bg-white/10 text-gray-300 font-medium rounded-xl transition-all flex items-center justify-center gap-2 text-xs border border-white/10"
+                              >
+                                <Eye size={16} />
+                                View Details
+                              </button>
+                            </div>
+                          </div>
+                        </GlassCard>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Outgoing Requests (Sent by Current User) */}
+              {tasks.some(t => (t.createdBy === user?.employeeId || t.assignedBy === user?.employeeId) && (t.status === 'REQUESTED' || t.requestStatus === 'PENDING')) && (
+                <div className="space-y-4 pt-6 border-t border-white/5">
+                  <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-gray-400">
+                    <Clock size={16} className="text-blue-400" />
+                    <span>My Outgoing Requests Sent to Other Supervisors</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4">
+                    {tasks.filter(t => (t.createdBy === user?.employeeId || t.assignedBy === user?.employeeId) && (t.status === 'REQUESTED' || t.requestStatus === 'PENDING')).map(task => {
+                      const assignedTechObj = staffList.find(s => s.id === task.assignedTo || s.employeeId === task.assignedTo);
+                      const supervisor = staffList.find(s => s.id === assignedTechObj?.supervisorId || s.employeeId === assignedTechObj?.supervisorId);
+
+                      return (
+                        <GlassCard key={task.id} className="p-4 bg-white/5">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div>
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded font-bold">{task.model}</span>
+                                <span className="font-bold text-white text-base">{task.title}</span>
+                              </div>
+                              <p className="text-xs text-gray-400">
+                                Technician: <span className="text-white font-medium">{assignedTechObj?.name || task.assignedTo}</span> • Concern Supervisor: <span className="text-amber-400 font-medium">{supervisor?.name || 'Assigned Supervisor'}</span>
+                              </p>
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                Requested Duration: <span className="text-green-400">{task.estimatedDuration ? `${task.estimatedDuration} mins` : 'N/A'}</span> • Deadline: <span className="text-red-400">{new Date(task.deadline).toLocaleDateString()}</span>
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="px-3 py-1 bg-amber-500/20 text-amber-400 text-xs font-bold rounded-full animate-pulse">
+                                Waiting for Approval
+                              </span>
+                            </div>
+                          </div>
+                        </GlassCard>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'theme' && (
+            <div className="space-y-8">
+              <div>
+                <h1 className="text-4xl font-bold mb-2">Theme Settings</h1>
+                <p className="text-gray-400">Customize your workspace appearance</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <GlassCard className="p-8">
+                  <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                    <Settings className="text-blue-400" />
+                    Select Theme
+                  </h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                    {[
+                      { id: 'dark', name: 'Deep Dark', color: '#0f0f12' },
+                      { id: 'light', name: 'Clean Light', color: '#f8fafc' },
+                      { id: 'blue', name: 'Ocean Blue', color: '#1e3a8a' },
+                      { id: 'purple', name: 'Royal Purple', color: '#4c1d95' },
+                      { id: 'green', name: 'Forest Green', color: '#064e3b' },
+                      { id: 'red', name: 'Crimson Red', color: '#7f1d1d' },
+                      { id: 'gold', name: 'Luxury Gold', color: '#78350f' }
+                    ].map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => handleThemeChange(t.id)}
+                        className={cn(
+                          "p-4 rounded-2xl border-2 transition-all flex flex-col items-center gap-3",
+                          user?.theme === t.id ? "border-blue-500 bg-blue-500/10" : "border-white/10 hover:border-white/20 bg-white/5"
+                        )}
+                      >
+                        <div className="w-10 h-10 rounded-full shadow-inner" style={{ backgroundColor: t.color }} />
+                        <span className="text-xs font-medium">{t.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </GlassCard>
+
+                <GlassCard className="p-8">
+                  <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                    <Upload className="text-blue-400" />
+                    Custom Background
+                  </h3>
+                  <div className="space-y-6">
+                    <div 
+                      className="aspect-video rounded-2xl border-2 border-dashed border-white/10 flex flex-col items-center justify-center gap-4 hover:bg-white/5 transition-all cursor-pointer relative overflow-hidden"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      {user?.customBackground ? (
+                        <img src={user.customBackground} alt="Custom Background" className="absolute inset-0 w-full h-full object-cover" />
+                      ) : (
+                        <>
+                          <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center">
+                            <Plus className="text-gray-400" />
+                          </div>
+                          <p className="text-sm text-gray-400">Click to upload background image</p>
+                        </>
+                      )}
+                    </div>
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      className="hidden" 
+                      accept="image/*"
+                      onChange={handleBackgroundUpload}
+                    />
+                    {user?.customBackground && (
+                      <button 
+                        onClick={() => handleThemeChange(user?.theme || 'dark', true)}
+                        className="w-full py-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-bold rounded-xl border border-red-600/30 transition-all"
+                      >
+                        Remove Custom Background
+                      </button>
+                    )}
+                  </div>
+                </GlassCard>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'profile' && (
+            <div className="max-w-2xl mx-auto">
+              <GlassCard className="p-8">
+                <div className="flex flex-col items-center text-center">
+                  <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-blue-600/30 mb-6 bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-4xl font-bold">
+                    {user?.avatar ? (
+                      <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      user?.name[0]
+                    )}
+                  </div>
+                  <h2 className="text-3xl font-bold">{user?.name}</h2>
+                  <p className="text-blue-400 font-mono mt-1">{user?.employeeId}</p>
+                  <div className="mt-2 px-3 py-1 bg-blue-600/20 text-blue-400 text-xs font-bold rounded-full uppercase tracking-widest">
+                    {user?.role.replace('_', ' ')}
+                  </div>
+                  {user?.designation && (
+                    <p className="text-gray-400 mt-2 italic">{user.designation}</p>
+                  )}
+
+                  {user?.role === 'OFFICER' && (
+                    <div className="w-full space-y-4 mt-6">
+                      <div className="bg-blue-600/10 p-6 rounded-3xl border border-blue-600/20 text-center">
+                        {canViewPoints ? (
+                          <>
+                            <p className="text-xs text-blue-400 uppercase tracking-widest mb-2 font-bold">Total Performance Points</p>
+                            <p className="text-5xl font-black text-white tracking-tighter">
+                              {getValidOfficerPoints(user?.employeeId || '')}
+                            </p>
+                            
+                            <div className="grid grid-cols-2 gap-4 mt-6">
+                              <div className="bg-white/5 p-4 rounded-2xl border border-white/10">
+                                <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Task point this month</p>
+                                <p className="text-2xl font-bold text-blue-400">
+                                  {getValidOfficerPoints(user?.employeeId || '', true)}
+                                </p>
+                              </div>
+                              <div className="bg-white/5 p-4 rounded-2xl border border-white/10">
+                                <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Total Task complete</p>
+                                <p className="text-2xl font-bold text-purple-400">
+                                  {getValidOfficerTaskCount(user?.employeeId || '')}
+                                </p>
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-xs text-purple-400 uppercase tracking-widest mb-2 font-bold">Total Tasks Completed</p>
+                            <p className="text-5xl font-black text-white tracking-tighter">
+                              {getValidOfficerTaskCount(user?.employeeId || '')}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="w-full space-y-3 mt-8">
+                    <div className="flex items-center gap-3 bg-white/5 p-4 rounded-xl border border-white/5">
+                      <div className="p-2 bg-blue-600/20 rounded-lg text-blue-400">
+                        <Phone size={20} />
+                      </div>
+                      <div className="text-left">
+                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Mobile Number</p>
+                        <p className="text-lg font-bold">{formatPhone(user?.phone) || 'Not Provided'}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 bg-white/5 p-4 rounded-xl border border-white/5">
+                      <div className="p-2 bg-purple-600/20 rounded-lg text-purple-400">
+                        <FileText size={20} />
+                      </div>
+                      <div className="text-left">
+                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Email Address</p>
+                        <p className="text-lg font-bold">{user?.email || 'Not Provided'}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="w-full grid grid-cols-2 gap-4 mt-4">
+                    <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Department</p>
+                      <p className="font-bold">{user?.department || 'RAC R&I'}</p>
+                    </div>
+                    <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Status</p>
+                      <p className="font-bold text-green-400">Active</p>
+                    </div>
+                  </div>
+                </div>
+              </GlassCard>
+            </div>
+          )}
+
+          {activeTab === 'staff' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h1 className="text-3xl font-bold">Staff Management</h1>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                      <Shield size={11} />
+                      Permanent Database Active
+                    </span>
+                  </div>
+                  <p className="text-gray-400 text-xs">
+                    Protected employee roster & associate concern network. Adding or deleting employees automatically triggers a permanent backup.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  {user?.role === 'SUPER_ADMIN' && (
+                    <>
+                      <button 
+                        onClick={async () => {
+                          try {
+                            const res = await fetch('/api/system/backfill-points', { 
+                              method: 'POST', 
+                              headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } 
+                            });
+                            const data = await res.json();
+                            toast.success(`Successfully backfilled ${data.count} task points.`);
+                            const token = localStorage.getItem('token');
+                            if (token) {
+                              fetchTasks(token);
+                              fetchPoints(token);
+                            }
+                          } catch (err) {
+                            toast.error("Failed to backfill points.");
+                          }
+                        }}
+                        className="bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-purple-600/20"
+                      >
+                        <RefreshCw size={20} />
+                        Backfill Points
+                      </button>
+                      <input 
+                        type="file" 
+                        ref={employeeExcelInputRef} 
+                        accept=".xlsx, .xls" 
+                        className="hidden" 
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            handleProcessEmployees(file);
+                            e.target.value = '';
+                          }
+                        }} 
+                      />
+                      <button 
+                        onClick={() => handleProcessEmployees()}
+                        disabled={isProcessingEmployees}
+                        className={cn(
+                          "bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 px-5 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-blue-600/20 shadow-sm",
+                          isProcessingEmployees && "opacity-50 cursor-not-allowed"
+                        )}
+                        title="Sync directly from server's employee data.xlsx"
+                      >
+                        <FileSpreadsheet size={20} className={isProcessingEmployees ? "animate-pulse" : ""} />
+                        {isProcessingEmployees ? "Processing..." : "Process Employee Data"}
+                      </button>
+                      <button 
+                        onClick={() => employeeExcelInputRef.current?.click()}
+                        disabled={isProcessingEmployees}
+                        className={cn(
+                          "bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 px-5 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-emerald-600/20 shadow-sm",
+                          isProcessingEmployees && "opacity-50 cursor-not-allowed"
+                        )}
+                        title="Upload an updated employee data.xlsx file from your device"
+                      >
+                        <Upload size={20} />
+                        Upload Excel
+                      </button>
+                      <button 
+                        onClick={handleClearTasks}
+                        disabled={isClearingTasks}
+                        className={cn(
+                          "bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 px-5 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-rose-600/20 shadow-sm",
+                          isClearingTasks && "opacity-50 cursor-not-allowed"
+                        )}
+                        title="Clear all dummy tasks and operational records while keeping all employee and user accounts intact"
+                      >
+                        <Trash2 size={20} className={isClearingTasks ? "animate-pulse" : ""} />
+                        {isClearingTasks ? "Clearing..." : "Clear Dummy Tasks"}
+                      </button>
+                      <button 
+                        onClick={() => fileInputRef.current?.click()}
+                        className="bg-white/5 hover:bg-white/10 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-white/10"
+                      >
+                        <Upload size={20} />
+                        Restore System
+                      </button>
+                      <button 
+                        onClick={handleBackup}
+                        className="bg-white/5 hover:bg-white/10 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all border border-white/10"
+                      >
+                        <Download size={20} />
+                        Backup System
+                      </button>
+                    </>
+                  )}
+                  <button 
+                    onClick={() => {
+                      setEditingStaff(null);
+                      setNewStaff({ employeeId: '', name: '', role: 'TECHNICIAN', password: '', avatar: '', supervisorId: '', supervisor_ids: [], assignedEngineers: [], phone: '', designation: '', email: '', department: 'RAC R&I' });
+                      setIsStaffModalOpen(true);
+                    }}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all"
+                  >
+                    <Plus size={20} />
+                    Add Staff
+                  </button>
+                </div>
+              </div>
+
+              {user?.role === 'OFFICER' && (
+                <div className="mb-4">
+                  <div className="mb-12">
+                    <h2 className="text-xl font-bold mb-4 text-purple-400">Assigned Authorities</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                      {staffList.filter(s => user.assignedEngineers?.includes(s.employeeId)).map((auth, i) => (
+                        <GlassCard key={auth.id} className="flex flex-col items-center text-center p-4">
+                          <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-white/10 mb-3 bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-xl font-bold">
+                            {auth.avatar ? (
+                              <img src={auth.avatar} alt={auth.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            ) : (
+                              auth.name[0]
+                            )}
+                          </div>
+                          <h3 className="font-bold text-white">{auth.name}</h3>
+                          <p className="text-[10px] text-gray-500 uppercase tracking-widest">{auth.role.replace('_', ' ')}</p>
+                          <p className="text-[10px] text-blue-400 font-mono mt-1">{auth.employeeId}</p>
+                          {auth.phone && (
+                            <div className="flex items-center gap-1.5 text-[10px] text-gray-500 mt-2">
+                              <Phone size={10} />
+                              {auth.phone}
+                            </div>
+                          )}
+                        </GlassCard>
+                      ))}
+                      {(!user.assignedEngineers || user.assignedEngineers.length === 0) && (
+                        <div className="col-span-full py-8 text-center bg-white/5 rounded-2xl border border-dashed border-white/10">
+                          <p className="text-gray-500 text-sm italic">No authorities assigned yet.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <h2 className="text-xl font-bold mb-4 text-blue-400">My Team Technicians</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {staffList.filter(s => s.supervisorId === user.id).map((staff, i) => {
+                      const isWorking = getTechnicianStatus(staff.employeeId).status === 'Working';
+                      return (
+                        <GlassCard key={staff.id} className="flex flex-col items-center text-center relative group transition-all duration-300 hover:bg-white/10">
+                          <div className="absolute top-4 left-4">
+                            <span className={cn(
+                              "text-[10px] font-bold px-2 py-1 rounded-full",
+                              isWorking ? "bg-amber-500/20 text-amber-500" : "bg-green-500/20 text-green-500"
+                            )}>
+                              {isWorking ? 'BUSY' : 'IDLE'}
+                            </span>
+                          </div>
+                          <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-white/10 mb-4 bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-2xl font-bold">
+                            {staff.avatar ? (
+                              <img src={staff.avatar} alt={staff.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            ) : (
+                              staff.name[0]
+                            )}
+                          </div>
+                          <h3 className="text-lg font-bold text-white">{staff.name}</h3>
+                          <p className="text-xs text-gray-500 mb-4">{staff.employeeId}</p>
+                          
+                          {isWorking && (
+                            <div className="w-full mt-2">
+                              {tasks
+                                .filter(t => (t.assignedTo === staff.name || t.assignedTo === staff.employeeId || t.assignedTo === staff.id) && (t.status === 'RUNNING' || t.status === 'DELAYED' || t.status === 'HOLD'))
+                                .map(t => (
+                                  <div key={t.id} className="mb-2">
+                                    <p className="text-[10px] text-blue-400 font-bold truncate mb-1">{t.title}</p>
+                                    <CountdownTimer task={t} />
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+                          <p className="text-xs text-gray-400 mb-1">{staff.role}</p>
+                          <p className="text-[10px] text-blue-400 font-mono mb-4">{staff.employeeId}</p>
+                          
+                          <div className="w-full pt-3 border-t border-white/5 space-y-2">
+                            <div className="flex flex-col items-center">
+                              <p className="text-[10px] text-gray-500 uppercase tracking-widest">Status: <span className={isWorking ? "text-amber-500" : "text-green-500"}>{isWorking ? 'BUSY' : 'IDLE'}</span></p>
+                            </div>
+                            
+                            {!isWorking && (
+                              <div className="flex flex-col items-center">
+                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">Contact:</p>
+                                <p className="text-sm font-mono text-blue-400">{formatPhone(staff.phone) || '01XXXXXXXXX'}</p>
+                              </div>
+                            )}
+                          </div>
+                        </GlassCard>
+                      );
+                    })}
+                  </div>
+                  
+                  <h2 className="text-xl font-bold mt-12 mb-4 text-gray-400">Other Team Technicians</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {staffList.filter(s => s.role === 'TECHNICIAN' && s.supervisorId !== user.id).map((staff, i) => {
+                      const isWorking = getTechnicianStatus(staff.employeeId).status === 'Working';
+                      return (
+                        <GlassCard key={staff.id} className="flex flex-col items-center text-center relative group opacity-70 hover:opacity-100 transition-all duration-300 hover:bg-white/10">
+                          <div className="absolute top-4 left-4">
+                            <span className={cn(
+                              "text-[10px] font-bold px-2 py-1 rounded-full",
+                              isWorking ? "bg-amber-500/20 text-amber-500" : "bg-green-500/20 text-green-500"
+                            )}>
+                              {isWorking ? 'BUSY' : 'IDLE'}
+                            </span>
+                          </div>
+                          <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-white/10 mb-4 bg-gray-700 flex items-center justify-center text-3xl font-bold">
+                            {staff.avatar ? (
+                              <img src={staff.avatar} alt={staff.name} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" referrerPolicy="no-referrer" />
+                            ) : (
+                              staff.name[0]
+                            )}
+                          </div>
+                          <h3 className="text-lg font-bold text-white">{staff.name}</h3>
+                          <p className="text-xs text-gray-400 mb-1">{staff.role}</p>
+                          <p className="text-[10px] text-blue-400 font-mono mb-4">{staff.employeeId}</p>
+
+                          <div className="w-full pt-3 border-t border-white/5 space-y-2">
+                            <div className="flex flex-col items-center">
+                              <p className="text-[10px] text-gray-500 uppercase tracking-widest">Status: <span className={isWorking ? "text-amber-500" : "text-green-500"}>{isWorking ? 'BUSY' : 'IDLE'}</span></p>
+                            </div>
+                            
+                            {!isWorking && (
+                              <div className="flex flex-col items-center">
+                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">Contact:</p>
+                                <p className="text-sm font-mono text-blue-400">{formatPhone(staff.phone) || '01XXXXXXXXX'}</p>
+                              </div>
+                            )}
+                          </div>
+                        </GlassCard>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {user?.role !== 'OFFICER' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {staffList.filter(s => {
+                    if (user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD') return true;
+                    if (user?.role === 'IN_CHARGE' || user?.role === 'MODEL_MANAGER') {
+                      return s.role === 'ENGINEER' && (user.assignedEngineers || []).includes(s.employeeId);
+                    }
+                    return false;
+                  }).map((staff, i) => (
+                    <GlassCard key={staff.id} className="flex flex-col items-center text-center relative group">
+                      <div className="absolute top-4 right-4 flex gap-2">
+                        <button 
+                          onClick={() => {
+                            setEditingStaff(staff);
+                            setNewStaff({ 
+                              employeeId: staff.employeeId, 
+                              name: staff.name, 
+                              role: staff.role,
+                              password: '',
+                              avatar: staff.avatar || '',
+                              supervisorId: staff.supervisorId || '',
+                              supervisor_ids: staff.supervisor_ids || [],
+                              assignedEngineers: staff.assignedEngineers || [],
+                              phone: staff.phone || '',
+                              designation: staff.designation || '',
+                              email: staff.email || '',
+                              department: staff.department || 'RAC R&I'
+                            });
+                            setIsStaffModalOpen(true);
+                          }}
+                          className="p-2 bg-white/10 hover:bg-blue-600 rounded-lg transition-all text-white"
+                          title="Edit Staff"
+                        >
+                          <Settings size={14} />
+                        </button>
+                        {user?.role === 'SUPER_ADMIN' && (
+                          <button 
+                            onClick={() => {
+                              setResetPasswordUser(staff);
+                              setIsResetPasswordModalOpen(true);
+                            }}
+                            className="p-2 bg-white/10 hover:bg-amber-600 rounded-lg transition-all text-white"
+                            title="Reset Password"
+                          >
+                            <Lock size={14} />
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => setStaffToDelete(staff.id)}
+                          className="p-2 bg-white/10 hover:bg-red-600 rounded-lg transition-all text-white"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <div className="w-32 h-32 rounded-full overflow-hidden border-2 border-white/10 mb-4 bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-4xl font-bold">
+                        {staff.avatar ? (
+                          <img src={staff.avatar} alt={staff.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          staff.name[0]
+                        )}
+                      </div>
+                      <h3 className="text-xl font-bold">{staff.name}</h3>
+                      <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-1">{staff.role.replace('_', ' ')}</p>
+                      <p className="text-xs text-gray-400 mt-1">{staff.employeeId}</p>
+                      <p className="text-blue-400/60 text-[10px] font-bold uppercase tracking-widest mt-1">{staff.department || 'RAC R&I'}</p>
+                      {staff.phone && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-gray-500 mt-2">
+                          <Phone size={10} />
+                          {staff.phone}
+                        </div>
+                      )}
+                      
+                      {staff.supervisorId && (
+                        <p className="text-[10px] text-blue-400 mt-2">
+                          Under: {staffList.find(s => s.id === staff.supervisorId)?.name || 'Unknown'}
+                        </p>
+                      )}
+                      
+                      <div className="w-full mt-8">
+                        <div className="bg-white/5 p-3 rounded-xl text-center">
+                          <p className="text-xs text-gray-400">Status</p>
+                          <p className="text-sm font-bold text-green-400">Active</p>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => setViewingStaff(staff)}
+                        className="w-full mt-6 py-3 border border-white/10 rounded-xl text-sm font-bold hover:bg-white/5 transition-all"
+                      >
+                        View Profile
+                      </button>
+                    </GlassCard>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'backup_restore' && user?.role === 'SUPER_ADMIN' && (
+            <div className="space-y-8 max-w-5xl mx-auto">
+              <motion.div
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div>
+                    <h1 className="text-3xl font-bold">Backup & Restore (Super Admin)</h1>
+                    <p className="text-gray-400 mt-1">Automatic real-time snapshot engine & source backup folder management.</p>
+                  </div>
+                  <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/30 px-4 py-2 rounded-xl">
+                    <FolderDown className="text-emerald-400" size={18} />
+                    <div className="text-left">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Source Backup Folder</p>
+                      <p className="font-mono text-xs text-emerald-400 font-bold">backups/</p>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <GlassCard className="p-5 border-emerald-500/30 bg-emerald-950/15">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="p-2.5 bg-emerald-500/20 text-emerald-400 rounded-xl">
+                      <PlusCircle size={20} />
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                      LIVE ACTIVE
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-white text-base">Task Entry Auto-Backup</h3>
+                  <p className="text-gray-400 text-xs mt-1">
+                    Triggers instant auto-backup snapshot whenever a new task is added into the system.
+                  </p>
+                </GlassCard>
+
+                <GlassCard className="p-5 border-rose-500/30 bg-rose-950/15">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="p-2.5 bg-rose-500/20 text-rose-400 rounded-xl">
+                      <Trash2 size={20} />
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                      LIVE ACTIVE
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-white text-base">Task Deleted Auto-Backup</h3>
+                  <p className="text-gray-400 text-xs mt-1">
+                    Triggers instant auto-backup snapshot whenever any task is deleted by user or admin.
+                  </p>
+                </GlassCard>
+
+                <GlassCard className="p-5 border-blue-500/30 bg-blue-950/15">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="p-2.5 bg-blue-500/20 text-blue-400 rounded-xl">
+                      <Clock size={20} />
+                    </span>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded text-[10px] font-bold border",
+                      backupSettings?.autoBackupEnabled 
+                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30" 
+                        : "bg-amber-500/20 text-amber-400 border-amber-500/30"
+                    )}>
+                      {backupSettings?.autoBackupEnabled ? "HOURLY ACTIVE" : "PAUSED"}
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-white text-base">Hourly Scheduled Backup</h3>
+                  <p className="text-gray-400 text-xs mt-1">
+                    Periodic background snapshots taken every hour for disaster recovery.
+                  </p>
+                </GlassCard>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* SUPER ADMIN AUTO-BACKUP & DATABASE ENGINE */}
+                {user?.role === 'SUPER_ADMIN' && (
+                  <GlassCard className="p-6 md:p-8 md:col-span-2 border-emerald-500/40 bg-emerald-950/15">
+                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 border-b border-white/10 pb-6 mb-6">
+                      <div className="flex items-center gap-4">
+                        <div className="w-14 h-14 bg-emerald-500/20 rounded-2xl flex items-center justify-center text-emerald-400">
+                          <HardDrive size={30} />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-3">
+                            <h2 className="text-2xl font-bold">Auto Data Backup (DB File)</h2>
+                            <span className={cn(
+                              "px-3 py-0.5 rounded-full text-xs font-bold flex items-center gap-1.5",
+                              backupSettings?.autoBackupEnabled ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" : "bg-amber-500/20 text-amber-400 border border-amber-500/40"
+                            )}>
+                              <span className={cn("w-2 h-2 rounded-full", backupSettings?.autoBackupEnabled ? "bg-emerald-400 animate-pulse" : "bg-amber-400")} />
+                              {backupSettings?.autoBackupEnabled ? "AUTO-BACKUP ACTIVE" : "PAUSED"}
+                            </span>
+                          </div>
+                          <p className="text-gray-400 text-sm mt-1">
+                            Snapshots stored to source folder <span className="font-mono text-emerald-400 font-bold bg-white/5 px-2 py-0.5 rounded">backups/</span> on task creation, task deletion, and hourly timer.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Toggle Auto-Backup */}
+                      <button
+                        onClick={handleToggleAutoBackup}
+                        disabled={isLoadingBackupSettings}
+                        className={cn(
+                          "px-5 py-3 rounded-xl font-bold text-sm transition-all flex items-center gap-2.5 shadow-lg",
+                          backupSettings?.autoBackupEnabled 
+                            ? "bg-emerald-600 hover:bg-emerald-700 text-white" 
+                            : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                        )}
+                      >
+                        <Zap size={18} />
+                        {backupSettings?.autoBackupEnabled ? "Hourly Backup: ON" : "Hourly Backup: OFF"}
+                      </button>
+                    </div>
+
+                    {/* Local Server Database Status Notice */}
+                    {backupSettings?.cloudQuota && (
+                      <div className="mb-6 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                        <div className="flex items-start gap-3">
+                          <span className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 mt-0.5">
+                            <Database size={18} />
+                          </span>
+                          <div>
+                            <p className="text-sm font-bold text-emerald-300">
+                              {backupSettings.cloudQuota.isMysqlConfigured
+                                ? `Local MySQL Server Active (${backupSettings.cloudQuota.mysqlHost} / ${backupSettings.cloudQuota.mysqlDatabase})`
+                                : 'Local Server Storage Active (Zero External Cloud Dependency)'}
+                            </p>
+                            <p className="text-xs text-emerald-200/80 mt-1">
+                              All tasks, staff accounts, shift records, file attachments, and automated backups are stored securely on your local server without cloud quota limits.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Operational Metrics & Schedule */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                      <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                        <p className="text-xs text-gray-400 font-medium">Backup Schedule</p>
+                        <p className="text-lg font-bold text-white mt-1">Every 1 Hour</p>
+                        <p className="text-[11px] text-emerald-400/80 mt-0.5">Automated Per-Hour Snapshot</p>
+                      </div>
+                      <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                        <p className="text-xs text-gray-400 font-medium">Last Saved Backup</p>
+                        <p className="text-sm font-bold text-white mt-1">
+                          {backupSettings?.lastBackupTime 
+                            ? new Date(backupSettings.lastBackupTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                            : 'Just now'}
+                        </p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">
+                          {backupSettings?.lastBackupTime ? new Date(backupSettings.lastBackupTime).toLocaleDateString() : 'Auto-initialized'}
+                        </p>
+                      </div>
+                      <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                        <p className="text-xs text-gray-400 font-medium">Next Backup Due</p>
+                        <p className="text-sm font-bold text-white mt-1">
+                          {backupSettings?.nextBackupTime 
+                            ? new Date(backupSettings.nextBackupTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                            : 'Within 1 hour'}
+                        </p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">Continuous auto-timer</p>
+                      </div>
+                      <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                        <p className="text-xs text-gray-400 font-medium">Live Protected Data</p>
+                        <p className="text-lg font-bold text-emerald-400 mt-1">{tasks.length} Tasks</p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">{backupSettings?.liveStats?.usersCount ?? staffList.length} Users • {backupSettings?.liveStats?.attendanceCount ?? attendance.length} Attendance</p>
+                      </div>
+                    </div>
+
+                    {/* Instant Action Buttons */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        onClick={handleInstantBackup}
+                        disabled={isTriggeringBackup}
+                        className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold px-6 py-3 rounded-xl transition-all flex items-center gap-2 text-sm shadow-lg shadow-emerald-900/30"
+                      >
+                        <Save size={18} className={isTriggeringBackup ? "animate-spin" : ""} />
+                        {isTriggeringBackup ? "Creating Snapshot..." : "Backup Now (Instant Snapshot)"}
+                      </button>
+
+                      <button
+                        onClick={handleDownloadDbFile}
+                        className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-6 py-3 rounded-xl transition-all flex items-center gap-2 text-sm shadow-lg shadow-blue-900/30"
+                      >
+                        <FileDown size={18} />
+                        Download Live Database (db.json)
+                      </button>
+
+                      <input
+                        type="file"
+                        accept=".json"
+                        className="hidden"
+                        ref={dbRestoreFileInputRef}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleUploadDbFileRestore(file);
+                        }}
+                      />
+
+                      <button
+                        onClick={() => dbRestoreFileInputRef.current?.click()}
+                        className="bg-purple-600 hover:bg-purple-700 text-white font-bold px-6 py-3 rounded-xl transition-all flex items-center gap-2 text-sm shadow-lg shadow-purple-900/30"
+                      >
+                        <Upload size={18} />
+                        Upload & Restore db.json
+                      </button>
+                    </div>
+
+                    {/* Hourly Backup History Table */}
+                    <div className="mt-8 border-t border-white/10 pt-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                          <History size={18} className="text-emerald-400" />
+                          <h3 className="font-bold text-white text-base">Source Backup Snapshots (backups/)</h3>
+                        </div>
+                        <button
+                          onClick={fetchBackupSettings}
+                          className="text-xs text-gray-400 hover:text-white flex items-center gap-1.5 transition-colors"
+                        >
+                          <RefreshCw size={13} className={isLoadingBackupSettings ? "animate-spin" : ""} />
+                          Refresh List
+                        </button>
+                      </div>
+
+                      {(!backupSettings?.backups || backupSettings.backups.length === 0) ? (
+                        <div className="p-6 text-center text-gray-500 text-sm bg-white/5 rounded-xl">
+                          No snapshot files created yet. An automated hourly backup runs every hour, or you can click "Backup Now" above.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto max-h-80 overflow-y-auto rounded-xl border border-white/10">
+                          <table className="w-full text-left text-xs text-gray-300">
+                            <thead className="bg-white/10 text-gray-400 uppercase text-[10px] tracking-wider sticky top-0 backdrop-blur-md">
+                              <tr>
+                                <th className="p-3">Snapshot Timestamp</th>
+                                <th className="p-3">Event / Type</th>
+                                <th className="p-3">Details</th>
+                                <th className="p-3">Protected Records</th>
+                                <th className="p-3">File Size</th>
+                                <th className="p-3 text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5">
+                              {backupSettings.backups.map((b) => (
+                                <tr key={b.filename} className="hover:bg-white/5 transition-colors">
+                                  <td className="p-3 font-mono">
+                                    <div className="font-bold text-white">
+                                      {new Date(b.timestamp).toLocaleString()}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500">{b.filename}</div>
+                                  </td>
+                                  <td className="p-3">
+                                    <span className={cn(
+                                      "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                                      b.type === 'TASK_ENTRY' 
+                                        ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30" 
+                                        : b.type === 'TASK_DELETED' 
+                                        ? "bg-rose-500/20 text-rose-400 border border-rose-500/30" 
+                                        : b.type === 'MANUAL' 
+                                        ? "bg-purple-500/20 text-purple-400 border border-purple-500/30" 
+                                        : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                    )}>
+                                      {b.type === 'TASK_ENTRY' 
+                                        ? 'Task Entry' 
+                                        : b.type === 'TASK_DELETED' 
+                                        ? 'Task Deleted' 
+                                        : b.type === 'MANUAL' 
+                                        ? 'Manual' 
+                                        : 'Hourly Auto'}
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-gray-300">
+                                    {b.details?.title ? (
+                                      <div>
+                                        <span className="font-medium text-white">{b.details.title}</span>
+                                        {b.details.taskId && <span className="text-[10px] text-gray-400 block font-mono">ID: {b.details.taskId}</span>}
+                                      </div>
+                                    ) : (
+                                      <span className="text-gray-500 font-mono text-[10px]">Folder: {b.sourceFolder || 'backups/'}</span>
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-gray-300">
+                                    <span className="font-bold text-emerald-400">{b.tasksCount}</span> tasks • <span className="font-bold text-blue-400">{b.usersCount}</span> users
+                                  </td>
+                                  <td className="p-3 font-mono text-gray-400">
+                                    {(b.size / 1024).toFixed(1)} KB
+                                  </td>
+                                  <td className="p-3 text-right space-x-2">
+                                    <button
+                                      onClick={() => handleDownloadSnapshot(b.filename)}
+                                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors font-medium text-[11px] inline-flex items-center gap-1"
+                                      title="Download Snapshot JSON"
+                                    >
+                                      <Download size={13} /> Download
+                                    </button>
+                                    <button
+                                      onClick={() => handleRestoreSnapshot(b.filename)}
+                                      disabled={isRestoringBackupFile === b.filename}
+                                      className="px-2.5 py-1.5 bg-amber-600/80 hover:bg-amber-600 text-white rounded-lg transition-colors font-medium text-[11px] inline-flex items-center gap-1 disabled:opacity-50"
+                                      title="Restore system to this state"
+                                    >
+                                      <RotateCcw size={13} className={isRestoringBackupFile === b.filename ? "animate-spin" : ""} />
+                                      {isRestoringBackupFile === b.filename ? "Restoring..." : "Restore"}
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </GlassCard>
+                )}
+                <GlassCard className="p-8 flex flex-col items-center text-center">
+                  <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center text-blue-400 mb-6">
+                    <ClipboardList size={32} />
+                  </div>
+                  <h2 className="text-xl font-bold mb-2">Task Backup</h2>
+                  <p className="text-gray-400 text-sm mb-8">Backup all tasks, status, timeline, and history under your panel scope.</p>
+                  <div className="flex gap-3 w-full">
+                    <button 
+                      onClick={() => handlePanelBackup('tasks', 'json')}
+                      className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+                    >
+                      <Download size={18} /> JSON
+                    </button>
+                    <button 
+                      onClick={() => handlePanelBackup('tasks', 'excel')}
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+                    >
+                      <FileSpreadsheet size={18} /> Excel
+                    </button>
+                  </div>
+                </GlassCard>
+
+                <GlassCard className="p-8 flex flex-col items-center text-center">
+                  <div className="w-16 h-16 bg-purple-600/20 rounded-2xl flex items-center justify-center text-purple-400 mb-6">
+                    <Database size={32} />
+                  </div>
+                  <h2 className="text-xl font-bold mb-2">Full Panel Backup</h2>
+                  <p className="text-gray-400 text-sm mb-8">Backup tasks, assigned users, mapping data, and performance data for your panel.</p>
+                  <div className="flex gap-3 w-full">
+                    <button 
+                      onClick={() => handlePanelBackup('full', 'json')}
+                      className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+                    >
+                      <Download size={18} /> JSON
+                    </button>
+                    <button 
+                      onClick={() => handlePanelBackup('full', 'excel')}
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+                    >
+                      <FileSpreadsheet size={18} /> Excel
+                    </button>
+                  </div>
+                </GlassCard>
+
+                <GlassCard className="p-8 flex flex-col items-center text-center md:col-span-2">
+                  <div className="w-16 h-16 bg-amber-600/20 rounded-2xl flex items-center justify-center text-amber-400 mb-6">
+                    <Upload size={32} />
+                  </div>
+                  <h2 className="text-xl font-bold mb-2">Restore Data</h2>
+                  <p className="text-gray-400 text-sm mb-8">Upload a previously saved backup file to restore your panel data. This will only affect data within your scope.</p>
+                  <input 
+                    type="file" 
+                    accept=".json,.xlsx" 
+                    className="hidden" 
+                    ref={panelRestoreInputRef}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handlePanelRestore(file);
+                    }}
+                  />
+                  <button 
+                    onClick={() => panelRestoreInputRef.current?.click()}
+                    className="w-full max-w-xs bg-amber-600 hover:bg-amber-700 text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2"
+                  >
+                    <Upload size={20} /> Upload & Restore
+                  </button>
+                  <p className="text-[10px] text-gray-500 mt-4 uppercase tracking-widest">Supports .json and .xlsx formats</p>
+                </GlassCard>
+
+                {user?.role === 'SUPER_ADMIN' && (
+                  <GlassCard className="p-8 flex flex-col items-center text-center md:col-span-2 border-blue-500/30">
+                    <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center text-blue-400 mb-6">
+                      <RefreshCw size={32} />
+                    </div>
+                    <h2 className="text-xl font-bold mb-2">Synchronize All Data</h2>
+                    <p className="text-gray-400 text-sm mb-8">Recalculate all officer points and technician task counts directly from the database. Use this after backup restoration to fix any data mismatches.</p>
+                    <button 
+                      onClick={handleSyncData}
+                      disabled={isLoading}
+                      className="w-full max-w-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2"
+                    >
+                      <RefreshCw size={20} className={isLoading ? "animate-spin" : ""} /> 
+                      {isLoading ? "Syncing data... please wait ⏳" : "Synchronize All Data"}
+                    </button>
+                    <p className="text-[10px] text-blue-500 mt-4 uppercase tracking-widest font-bold">Admin Only: Fixes system-wide mismatches</p>
+                  </GlassCard>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'officer_tasks' && (
+            <div className="space-y-6">
+              <h1 className="text-3xl font-bold">My Assigned Tasks</h1>
+              <div className="grid grid-cols-1 gap-6">
+                {tasks.filter(t => t.assignedTo === user?.name || t.assignedTo === user?.id).map(task => (
+                  <GlassCard key={task.id} className="flex flex-col md:flex-row gap-6 items-center">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="text-xs font-mono text-blue-400">{task.taskId}</span>
+                        <span className={cn(
+                          "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase",
+                          task.urgency === 'MOST_URGENT' ? "bg-red-500/20 text-red-500" : "bg-blue-500/20 text-blue-500"
+                        )}>
+                          {task.urgency}
+                        </span>
+                      </div>
+                      <h3 className="text-xl font-bold">{task.title}</h3>
+                      <p className="text-sm text-gray-400 mt-1">{task.details}</p>
+                      <div className="flex items-center gap-4 mt-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1"><Clock size={12} /> Deadline: <span className="font-black text-red-500">{new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}</span></span>
+                        <span className="flex items-center gap-1"><UserCircle size={12} /> From: {task.assignedBy}</span>
+                        {canViewPoints && (
+                          <span className="flex items-center gap-1 font-bold text-blue-400">Points: {task.points || 10}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2 min-w-[150px]">
+                      <div className="text-center mb-2">
+                        <p className="text-[10px] text-gray-500 uppercase mb-1">Status</p>
+                        <span className="text-sm font-bold text-amber-500">{task.status}</span>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          setShowDistributeModal(task.id);
+                          setDistributeWorkType(task.workType || 'SINGLE');
+                          setSelectedTechs(task.assignedTechnicians || []);
+                          setTechSearch('');
+                        }}
+                        className="w-full py-2 bg-blue-600 rounded-xl font-bold text-sm hover:bg-blue-700 transition-all"
+                      >
+                        Distribute to Tech
+                      </button>
+                    </div>
+                  </GlassCard>
+                ))}
+                {tasks.filter(t => t.assignedTo === user?.name || t.assignedTo === user?.id).length === 0 && (
+                   <div className="py-20 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                     <p className="text-gray-500">No tasks assigned to you yet.</p>
+                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'attendance' && (
+            <div className="space-y-6">
+              {isHodExecutiveUser ? (
+                /* HOD / DHOD Associate Concern Attendance Panel (In-Charge direct associates, no technicians) */
+                <div className="space-y-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-400 mb-1">
+                        <Building2 size={16} />
+                        <span>HOD Associate Concern Attendance</span>
+                      </div>
+                      <h1 className="text-3xl font-bold text-white">Associated In-Charge & Unit Attendance</h1>
+                      <p className="text-gray-400 text-sm mt-1">
+                        Daily attendance and operational status of HOD associate In-Charges & Section Leads (technicians are supervised by Unit Officers)
+                      </p>
+                    </div>
+                    <div className="px-4 py-2 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center gap-2 self-start sm:self-auto">
+                      <Calendar size={14} className="text-blue-400" />
+                      <span className="text-xs font-bold text-blue-400">
+                        {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Associate Concern Category Tabs */}
+                  <div className="flex flex-wrap items-center gap-2 p-1.5 bg-black/30 border border-white/10 rounded-2xl">
+                    {[
+                      { key: 'IN_CHARGE', label: 'In-Charge (Direct Associates)', count: staffList.filter(s => s.role === 'IN_CHARGE').length },
+                      { key: 'ALL_ASSOCIATE', label: 'All Associate Concerns', count: staffList.filter(s => ['IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(s.role)).length },
+                      { key: 'MODEL_MANAGER', label: 'Model Manager', count: staffList.filter(s => s.role === 'MODEL_MANAGER').length },
+                      { key: 'ENGINEER', label: 'Engineer', count: staffList.filter(s => s.role === 'ENGINEER').length },
+                      { key: 'OFFICER', label: 'Officer', count: staffList.filter(s => s.role === 'OFFICER').length }
+                    ].map(tab => {
+                      const isActive = hodAttendanceCategory === tab.key;
+                      return (
+                        <button
+                          key={tab.key}
+                          onClick={() => setHodAttendanceCategory(tab.key as any)}
+                          className={cn(
+                            "px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2",
+                            isActive
+                              ? "bg-blue-600 text-white shadow-lg shadow-blue-500/25"
+                              : "bg-white/5 hover:bg-white/10 text-slate-300"
+                          )}
+                        >
+                          <span>{tab.label}</span>
+                          <span className={cn(
+                            "px-1.5 py-0.5 rounded-md text-[10px]",
+                            isActive ? "bg-white/20 text-white" : "bg-black/30 text-slate-400"
+                          )}>
+                            {tab.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="bg-blue-500/5 border border-blue-500/10 rounded-2xl p-4 flex items-center gap-3">
+                    <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center text-blue-400 shrink-0">
+                      <Info size={20} />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-blue-400">Daily Associate Reset Active</p>
+                      <p className="text-[11px] text-gray-400">
+                        Associate in-charges and unit personnel are auto-set to "Present" at 00:00 every day. HOD can update associate status below.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Associate Staff Cards */}
+                  {(() => {
+                    const filteredAssociates = staffList.filter(s => {
+                      if (hodAttendanceCategory === 'IN_CHARGE') return s.role === 'IN_CHARGE';
+                      if (hodAttendanceCategory === 'ALL_ASSOCIATE') return ['IN_CHARGE', 'MODEL_MANAGER', 'ENGINEER', 'OFFICER'].includes(s.role);
+                      return s.role === hodAttendanceCategory;
+                    });
+
+                    if (filteredAssociates.length === 0) {
+                      return (
+                        <div className="py-20 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                          <p className="text-gray-400 font-medium">No personnel found for selected associate concern.</p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {filteredAssociates.map(person => {
+                          const currentStatus = getStaffAttendanceStatus(person);
+                          
+                          let statusBadge = "bg-emerald-500/20 text-emerald-400 border-emerald-500/30";
+                          if (currentStatus === 'ABSENT') statusBadge = "bg-red-500/20 text-red-400 border-red-500/30";
+                          else if (currentStatus === 'LEAVE') statusBadge = "bg-amber-500/20 text-amber-400 border-amber-500/30";
+                          else if (currentStatus === 'SHORT_LEAVE') statusBadge = "bg-purple-500/20 text-purple-400 border-purple-500/30";
+                          else if (currentStatus === 'SHIFT_A' || currentStatus === 'SHIFT_B') statusBadge = "bg-blue-500/20 text-blue-400 border-blue-500/30";
+
+                          const personTasks = tasks.filter(t => t.assignedTo === person.employeeId);
+                          const runningTasks = personTasks.filter(t => t.status === 'RUNNING').length;
+                          const completedTasks = personTasks.filter(t => t.status === 'COMPLETED').length;
+
+                          return (
+                            <GlassCard key={person.id} className="flex flex-col justify-between">
+                              <div>
+                                <div className="flex items-start justify-between gap-3 mb-4">
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-12 h-12 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center font-bold text-white text-lg shadow-md">
+                                      {person.name[0]}
+                                    </div>
+                                    <div>
+                                      <h3 className="font-bold text-white text-base leading-tight">{person.name}</h3>
+                                      <p className="text-xs text-blue-400 font-mono mt-0.5">ID: {person.employeeId}</p>
+                                    </div>
+                                  </div>
+                                  <span className={cn("px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border shrink-0", statusBadge)}>
+                                    {currentStatus}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2 mb-4">
+                                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-white/10 text-slate-300 uppercase">
+                                    {person.role.replace(/_/g, ' ')}
+                                  </span>
+                                  <span className="text-xs text-slate-400 truncate">
+                                    {person.department || 'RAC R&I'} {person.section ? `• ${person.section}` : ''}
+                                  </span>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 py-2.5 px-3 bg-white/5 rounded-xl text-xs mb-4">
+                                  <div>
+                                    <span className="text-slate-400 block text-[10px] uppercase">Running Tasks</span>
+                                    <span className="font-bold text-amber-400">{runningTasks}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[10px] uppercase">Completed</span>
+                                    <span className="font-bold text-emerald-400">{completedTasks}</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div>
+                                <div className="text-[10px] uppercase font-bold text-slate-400 mb-2">Update Associate Attendance</div>
+                                <div className="grid grid-cols-3 gap-1.5">
+                                  {[
+                                    { label: 'Present', value: 'PRESENT' },
+                                    { label: 'Leave', value: 'LEAVE' },
+                                    { label: 'Short-Leave', value: 'SHORT_LEAVE' },
+                                    { label: 'Shift A', value: 'SHIFT_A' },
+                                    { label: 'Shift B', value: 'SHIFT_B' },
+                                    { label: 'Absent', value: 'ABSENT' }
+                                  ].map(opt => (
+                                    <button 
+                                      key={opt.value}
+                                      onClick={() => handleUpdateAttendance(person.employeeId, opt.value)}
+                                      className={cn(
+                                        "py-1.5 rounded-lg text-[10px] font-bold transition-all text-center",
+                                        currentStatus === opt.value 
+                                          ? "bg-blue-600 text-white shadow-md shadow-blue-500/20" 
+                                          : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white"
+                                      )}
+                                    >
+                                      {opt.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </GlassCard>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                /* Non-HOD (Officer / Engineer) Technician Attendance Management */
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h1 className="text-3xl font-bold">Technician Attendance</h1>
+                      <p className="text-gray-500 text-sm mt-1">Daily attendance management for technicians</p>
+                    </div>
+                    <div className="px-4 py-2 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center gap-2">
+                      <Calendar size={14} className="text-blue-400" />
+                      <span className="text-xs font-bold text-blue-400">
+                        {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-blue-500/5 border border-blue-500/10 rounded-2xl p-4 flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center text-blue-400">
+                      <Info size={20} />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-blue-400">Daily Reset System Active</p>
+                      <p className="text-[10px] text-gray-500">All technicians are auto-set to "Present" at 00:00 every day. Officers can manually update status below.</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {staffList
+                      .filter(s => s.role === 'TECHNICIAN' && isStaffInScope(s))
+                      .map((tech, i) => {
+                        const currentStatus = getStaffAttendanceStatus(tech);
+                        return (
+                          <GlassCard key={tech.id} className="flex flex-col">
+                            <div className="flex items-center gap-4 mb-6">
+                              <div className="w-12 h-12 bg-white/10 rounded-full flex items-center justify-center font-bold">
+                                {tech.name[0]}
+                              </div>
+                              <div>
+                                <h3 className="font-bold">{tech.name}</h3>
+                                <p className="text-xs text-gray-500">{tech.employeeId}</p>
+                              </div>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-2">
+                              {[
+                                { label: 'Present', value: 'PRESENT' },
+                                { label: 'Leave', value: 'LEAVE' },
+                                { label: 'Short-Leave', value: 'SHORT_LEAVE' },
+                                { label: 'Shift A (6AM-2PM)', value: 'SHIFT_A' },
+                                { label: 'Shift B (2PM-10PM)', value: 'SHIFT_B' },
+                                { label: 'Absent', value: 'ABSENT' }
+                              ].map(opt => (
+                                <button 
+                                  key={opt.value}
+                                  onClick={() => handleUpdateAttendance(tech.employeeId, opt.value)}
+                                  className={cn(
+                                    "py-2 rounded-lg text-[10px] font-bold transition-all",
+                                    currentStatus === opt.value 
+                                      ? "bg-blue-600 text-white shadow-md shadow-blue-500/20" 
+                                      : "bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white"
+                                  )}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          </GlassCard>
+                        );
+                      })}
+                    {staffList.filter(s => s.role === 'TECHNICIAN' && (user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD' || s.supervisorId === user?.id)).length === 0 && (
+                      <div className="col-span-full py-20 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                        <p className="text-gray-500">No technicians found in the system.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'performance' && (
+            <div className="space-y-8">
+              <TeamPerformanceDashboard
+                token={localStorage.getItem('token') || ''}
+                userRole={user?.role}
+                isExecutive={['SUPER_ADMIN', 'CBO', 'DCBO', 'HOD', 'DHOD'].includes(user?.role || '')}
+              />
+
+              {canViewPoints && (
+                <div className="space-y-6">
+                  <h2 className="text-xl font-bold flex items-center gap-2">
+                    <Award className="text-purple-400" /> Officer Point Rankings
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {(() => {
+                      const rankedOfficers = staffList
+                        .filter(s => s.role === 'OFFICER')
+                        .map(s => {
+                          const points = Math.max(
+                            getValidOfficerPoints(s.employeeId),
+                            getValidOfficerPoints(s.id),
+                            Number(s.total_point || 0)
+                          );
+                          const thisMonthPoints = Math.max(
+                            getValidOfficerPoints(s.employeeId, true),
+                            getValidOfficerPoints(s.id, true)
+                          );
+                          return { ...s, points, thisMonthPoints };
+                        })
+                        .filter(s => s.points > 0)
+                        .sort((a, b) => b.points - a.points);
+
+                      if (rankedOfficers.length === 0) {
+                        return (
+                          <div className="col-span-full text-center py-6 text-gray-500 text-sm">
+                            No officers with task points recorded yet. Only officers with active points are shown.
+                          </div>
+                        );
+                      }
+
+                      return rankedOfficers.map((s, idx) => (
+                        <GlassCard key={s.id} className="flex items-center justify-between p-4 border-purple-500/20">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 bg-purple-600/20 text-purple-400 rounded-full flex items-center justify-center font-bold text-sm">
+                              {idx + 1}
+                            </div>
+                            <div>
+                              <p className="font-bold text-sm">{s.name}</p>
+                              <p className="text-[10px] text-gray-500">{s.employeeId}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-lg font-black text-white">{s.points}</p>
+                            <p className="text-[10px] text-purple-400 font-bold">+{s.thisMonthPoints} this month</p>
+                          </div>
+                        </GlassCard>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'technician_monitoring' && (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-4xl font-bold mb-2">Technician Monitoring</h1>
+                  <p className="text-gray-400">Real-time workforce management and utilization tracking</p>
+                </div>
+                <div className="flex gap-4">
+                  <div className="px-4 py-2 bg-green-400/10 border border-green-400/20 rounded-xl flex items-center gap-2">
+                    <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                    <span className="text-xs font-bold text-green-400">
+                      {staffList.filter(s => {
+                        if (s.role !== 'TECHNICIAN') return false;
+                        if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                        return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status === 'Working';
+                      }).length} Working
+                    </span>
+                  </div>
+                  <div className="px-4 py-2 bg-emerald-400/10 border border-emerald-400/20 rounded-xl flex items-center gap-2">
+                    <div className="w-2 h-2 bg-emerald-400 rounded-full" />
+                    <span className="text-xs font-bold text-emerald-400">
+                      {staffList.filter(s => {
+                        if (s.role !== 'TECHNICIAN') return false;
+                        if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                        return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status !== 'Working';
+                      }).length} Free
+                    </span>
+                  </div>
+                  <div className="px-4 py-2 bg-amber-400/10 border border-amber-400/20 rounded-xl flex items-center gap-2">
+                    <div className="w-2 h-2 bg-amber-400 rounded-full" />
+                    <span className="text-xs font-bold text-amber-400">
+                      {staffList.filter(s => {
+                        if (s.role !== 'TECHNICIAN') return false;
+                        if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                        return !isTechnicianActiveForMonitoring(s);
+                      }).length} On Leave / Off-Duty
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-12">
+                {/* Working Technicians Section */}
+                <section>
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-1.5 h-6 bg-green-500 rounded-full" />
+                    <h2 className="text-2xl font-bold text-white">Working Technicians</h2>
+                    <span className="px-2.5 py-0.5 bg-green-500/10 text-green-500 text-xs font-bold rounded-full border border-green-500/20">
+                      {staffList.filter(s => {
+                        if (s.role !== 'TECHNICIAN') return false;
+                        if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                        return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status === 'Working';
+                      }).length}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {staffList
+                      .filter(s => {
+                        if (s.role !== 'TECHNICIAN') return false;
+                        if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                        return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status === 'Working';
+                      })
+                      .map((tech) => renderTechnicianCard(tech))}
+                    {staffList.filter(s => {
+                      if (s.role !== 'TECHNICIAN') return false;
+                      if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                      return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status === 'Working';
+                    }).length === 0 && (
+                      <div className="col-span-full py-12 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                        <p className="text-gray-500">No technicians are currently working on tasks.</p>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                {/* Free Technicians Section */}
+                <section>
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-1.5 h-6 bg-emerald-500 rounded-full" />
+                    <h2 className="text-2xl font-bold text-white">Free Technicians</h2>
+                    <span className="px-2.5 py-0.5 bg-emerald-500/10 text-emerald-500 text-xs font-bold rounded-full border border-emerald-500/20">
+                      {staffList.filter(s => {
+                        if (s.role !== 'TECHNICIAN') return false;
+                        if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                        return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status !== 'Working';
+                      }).length}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {staffList
+                      .filter(s => {
+                        if (s.role !== 'TECHNICIAN') return false;
+                        if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                        return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status !== 'Working';
+                      })
+                      .map((tech) => renderTechnicianCard(tech))}
+                    {staffList.filter(s => {
+                      if (s.role !== 'TECHNICIAN') return false;
+                      if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                      return isTechnicianActiveForMonitoring(s) && getTechnicianStatus(s.employeeId).status !== 'Working';
+                    }).length === 0 && (
+                      <div className="col-span-full py-12 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                        <p className="text-gray-500">No free technicians available at the moment.</p>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                {/* On Leave / Off-Duty Technicians Section */}
+                {staffList.some(s => s.role === 'TECHNICIAN' && (user?.role === 'OFFICER' || isStaffInScope(s)) && !isTechnicianActiveForMonitoring(s)) && (
+                  <section>
+                    <div className="flex items-center gap-3 mb-6">
+                      <div className="w-1.5 h-6 bg-amber-500 rounded-full" />
+                      <h2 className="text-2xl font-bold text-white">On Leave / Off-Duty Technicians</h2>
+                      <span className="px-2.5 py-0.5 bg-amber-500/10 text-amber-500 text-xs font-bold rounded-full border border-amber-500/20">
+                        {staffList.filter(s => {
+                          if (s.role !== 'TECHNICIAN') return false;
+                          if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                          return !isTechnicianActiveForMonitoring(s);
+                        }).length}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {staffList
+                        .filter(s => {
+                          if (s.role !== 'TECHNICIAN') return false;
+                          if (user?.role !== 'OFFICER' && !isStaffInScope(s)) return false;
+                          return !isTechnicianActiveForMonitoring(s);
+                        })
+                        .map((tech) => renderTechnicianCard(tech))}
+                    </div>
+                  </section>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'models' && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold">Model Distribution</h1>
+                  <p className="text-gray-400 mt-1">Monitoring tasks for your assigned models.</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-gray-500 uppercase tracking-widest">Manager ID</p>
+                  <p className="text-blue-400 font-mono font-bold">{user?.employeeId}</p>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {(() => {
+                  const myModels = user?.employeeId === '38056' ? ['12K', '9K', 'Portable'] :
+                                   user?.employeeId === '37091' ? ['18K'] :
+                                   user?.employeeId === '41053' ? ['24K', '30K', '36K'] :
+                                   user?.employeeId === '54589' ? ['Chemical & Polymer'] : [];
+                  
+                  return myModels.map(m => {
+                    const modelTasks = filteredTasks.filter(t => t.model === m);
+                    const activeCount = modelTasks.filter(t => t.status === 'RUNNING').length;
+                    const pendingCount = modelTasks.filter(t => t.status === 'PENDING').length;
+                    const completedCount = modelTasks.filter(t => t.status === 'COMPLETED').length;
+                    
+                    return (
+                      <GlassCard key={m} className="p-6">
+                        <div className="flex justify-between items-start mb-6">
+                          <div>
+                            <h3 className="text-xl font-bold">{m} Series</h3>
+                            <p className="text-xs text-gray-500 mt-1">Model-wise Distribution</p>
+                          </div>
+                          <div className="bg-blue-500/20 text-blue-400 p-2 rounded-lg">
+                            <AirVent size={20} />
+                          </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-3 gap-2 mb-6">
+                          <div className="text-center p-2 rounded-xl bg-white/5 border border-white/5">
+                            <p className="text-[10px] text-gray-500 uppercase">Pending</p>
+                            <p className="text-lg font-bold text-amber-500">{pendingCount}</p>
+                          </div>
+                          <div className="text-center p-2 rounded-xl bg-white/5 border border-white/5">
+                            <p className="text-[10px] text-gray-500 uppercase">Running</p>
+                            <p className="text-lg font-bold text-blue-500">{activeCount}</p>
+                          </div>
+                          <div className="text-center p-2 rounded-xl bg-white/5 border border-white/5">
+                            <p className="text-[10px] text-gray-500 uppercase">Compl.</p>
+                            <p className="text-lg font-bold text-green-500">{completedCount}</p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Recent Tasks</p>
+                           {modelTasks.slice(0, 3).map(t => (
+                             <div key={t.id} className="p-3 rounded-xl bg-white/5 border border-white/5 flex justify-between items-center hover:bg-white/10 transition-all cursor-pointer" onClick={() => { setSelectedTask(t); setIsTaskDetailsModalOpen(true); }}>
+                               <div className="min-w-0">
+                                 <p className="text-xs font-bold truncate">{t.title}</p>
+                                 <p className="text-[9px] text-gray-500">{t.taskId}</p>
+                               </div>
+                               <span className={cn(
+                                 "text-[8px] font-bold px-1.5 py-0.5 rounded",
+                                 t.status === 'RUNNING' ? "bg-blue-500/20 text-blue-500" :
+                                 t.status === 'PENDING' ? "bg-amber-500/20 text-amber-500" :
+                                 "bg-green-500/20 text-green-500"
+                               )}>
+                                 {t.status}
+                               </span>
+                             </div>
+                           ))}
+                           {modelTasks.length === 0 && (
+                             <p className="text-[10px] text-gray-600 italic">No tasks for this model</p>
+                           )}
+                        </div>
+                      </GlassCard>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'section' && (
+            <div className="space-y-8 pb-12">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h1 className="text-3xl font-bold">{user?.role === 'IN_CHARGE' ? "Section Monitoring Dashboard" : "Department Monitoring Dashboard"}</h1>
+                  <p className="text-gray-400 mt-1">Real-time monitoring of Engineer activities and task progress.</p>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <Clock size={14} />
+                  <span>Last updated: {new Date().toLocaleTimeString()}</span>
+                </div>
+              </div>
+
+              {/* Section Stats */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {(() => {
+                  const myEngineers = staffList.filter(s => {
+                    if (s.role !== 'ENGINEER') return false;
+                    if (user.role === 'SUPER_ADMIN' || user.role === 'CBO' || user.role === 'DCBO' || user.role === 'HOD' || user.role === 'DHOD') return true;
+                    return user.assignedEngineers?.includes(s.employeeId);
+                  });
+                  
+                  const myTasks = filteredTasks; // Use the already scoped filteredTasks
+
+                  return (
+                    <>
+                      <StatCard 
+                        label="Total Engineers" 
+                        value={myEngineers.length} 
+                        icon={Users} 
+                        color="bg-purple-500" 
+                      />
+                      <StatCard 
+                        label="Active Tasks" 
+                        value={myTasks.filter(t => t.status === 'RUNNING').length} 
+                        icon={Activity} 
+                        color="bg-blue-500" 
+                      />
+                      <StatCard 
+                        label="Pending Tasks" 
+                        value={myTasks.filter(t => t.status === 'PENDING').length} 
+                        icon={Clock} 
+                        color="bg-amber-500" 
+                      />
+                      <StatCard 
+                        label="Delayed Tasks" 
+                        value={myTasks.filter(t => t.status === 'DELAYED' || (t.status !== 'COMPLETED' && new Date(t.deadline) < new Date())).length} 
+                        icon={AlertCircle} 
+                        color="bg-red-500" 
+                      />
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* Engineer Monitoring List */}
+              <div className="space-y-8">
+                {staffList.filter(s => {
+                  if (s.role !== 'ENGINEER') return false;
+                  
+                  // Super Admin, CBO, DCBO, HOD, and DHOD see everyone
+                  if (user.role === 'SUPER_ADMIN' || user.role === 'CBO' || user.role === 'DCBO' || user.role === 'HOD' || user.role === 'DHOD') return true;
+                  
+                  // In-Charge ONLY sees assigned engineers
+                  if (user.role === 'IN_CHARGE') {
+                    return user.assignedEngineers?.includes(s.employeeId);
+                  }
+                  
+                  return false;
+                }).map((engineer) => {
+                  const engineerTasks = tasks.filter(t => {
+                    const isCreatedByEngineer = t.createdBy === engineer.employeeId || t.createdBy === engineer.id;
+                    const isAssignedByEngineer = t.assignedBy === engineer.employeeId || t.assignedBy === engineer.id;
+                    const isAssignedToEngineer = (t.assignedTo || '').toLowerCase().trim() === engineer.name.toLowerCase().trim() || t.assignedTo === engineer.employeeId || t.assignedTo === engineer.id;
+                    const isApprovedByEngineer = t.approvedBy === engineer.employeeId || t.recommendedBy === engineer.employeeId || t.concernEngineerId === engineer.employeeId;
+
+                    return isCreatedByEngineer || isAssignedByEngineer || isAssignedToEngineer || isApprovedByEngineer;
+                  });
+
+                  return (
+                    <GlassCard key={engineer.id} className="overflow-hidden border-white/10">
+                      <div className="flex items-center justify-between mb-6 border-b border-white/5 pb-4">
+                        <div className="flex items-center gap-4">
+                          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-lg">
+                            {engineer.name[0]}
+                          </div>
+                          <div>
+                            <h3 className="text-lg font-bold">{engineer.name}</h3>
+                            <p className="text-xs text-blue-400 font-mono">{engineer.employeeId}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-6">
+                          <div className="text-center">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-widest">Pending</p>
+                            <p className="text-lg font-bold text-amber-500">{engineerTasks.filter(t => t.status === 'PENDING').length}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-widest">Running</p>
+                            <p className="text-lg font-bold text-blue-500">{engineerTasks.filter(t => t.status === 'RUNNING').length}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-widest">Completed</p>
+                            <p className="text-lg font-bold text-green-500">{engineerTasks.filter(t => t.status === 'COMPLETED').length}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Pending Tasks */}
+                        <div className="space-y-4">
+                          <h4 className="text-xs font-bold text-amber-500 uppercase tracking-widest flex items-center gap-2">
+                            <Clock size={14} />
+                            Pending Tasks
+                          </h4>
+                          <div className="space-y-3">
+                            {engineerTasks.filter(t => t.status === 'PENDING').map(task => (
+                              <div key={task.id} className="p-4 rounded-xl bg-white/5 border border-white/5 hover:border-white/10 transition-all cursor-pointer group" onClick={() => { setSelectedTask(task); setIsTaskDetailsModalOpen(true); }}>
+                                <div className="flex justify-between items-start mb-2">
+                                  <div>
+                                    <h5 className="text-base font-bold truncate pr-2">{task.title}</h5>
+                                    <div className="flex items-center gap-1 mt-0.5">
+                                      <Calendar size={10} className="text-red-400" />
+                                      <span className="text-[10px] font-bold text-red-400">
+                                        Deadline: <span className="font-black text-red-500">{task.engineer_deadline ? new Date(task.engineer_deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : (task.deadline ? new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A')}</span>
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <Info size={16} className="text-gray-500 group-hover:text-blue-400" />
+                                </div>
+                                <p className="text-xs text-gray-500 line-clamp-1 mb-3">{task.details}</p>
+                                
+                                <div className="mb-3 p-2 bg-blue-600/10 rounded-lg border border-blue-600/20">
+                                  <p className="text-[10px] text-blue-400 uppercase tracking-widest font-bold mb-1">Assigned Engineer</p>
+                                  <p className="text-sm font-bold text-white">{engineer.name}</p>
+                                </div>
+
+                                <div className="flex items-center justify-between mt-3">
+                                  <div className="flex flex-col">
+                                    <span className="text-[10px] text-gray-400">{task.taskId}</span>
+                                    {(() => {
+                                      const assignee = staffList.find(s => s.name.toLowerCase() === task.assignedTo.toLowerCase());
+                                      if (assignee?.role === 'TECHNICIAN') {
+                                        const officer = staffList.find(s => s.id === assignee.supervisorId);
+                                        return (
+                                          <div className="flex flex-col mt-1">
+                                            <span className="text-[10px] text-blue-400 font-bold">Officer: {officer?.name || 'N/A'}</span>
+                                            <span className="text-[10px] text-gray-500">Tech: {assignee.name}</span>
+                                          </div>
+                                        );
+                                      } else if (assignee?.role === 'OFFICER') {
+                                        return <span className="text-[10px] text-blue-400 font-bold mt-1">Officer: {assignee.name}</span>;
+                                      }
+                                      return null;
+                                    })()}
+                                  </div>
+                                  <div className="flex flex-col items-end">
+                                    <span className="text-[10px] text-red-400 font-black uppercase tracking-widest mb-1">Deadline</span>
+                                    <span className="text-lg text-red-500 font-black bg-red-500/10 px-3 py-1.5 rounded-md border border-red-500/20 shadow-lg shadow-red-500/20">
+                                      {task.engineer_deadline ? new Date(task.engineer_deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : (task.deadline ? new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A')}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                            {engineerTasks.filter(t => t.status === 'PENDING').length === 0 && (
+                              <p className="text-[10px] text-gray-600 italic">No pending tasks</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Running Tasks */}
+                        <div className="space-y-4">
+                          <h4 className="text-xs font-bold text-blue-500 uppercase tracking-widest flex items-center gap-2">
+                            <Activity size={14} />
+                            Running Tasks
+                          </h4>
+                          <div className="space-y-3">
+                            {engineerTasks.filter(t => t.status === 'RUNNING').map(task => (
+                              <div key={task.id} className="p-3 rounded-xl bg-blue-500/5 border border-blue-500/10 hover:border-blue-500/20 transition-all cursor-pointer group" onClick={() => { setSelectedTask(task); setIsTaskDetailsModalOpen(true); }}>
+                                <div className="flex justify-between items-start mb-2">
+                                  <h5 className="text-sm font-bold truncate pr-2">{task.title}</h5>
+                                  <Info size={14} className="text-blue-400" />
+                                </div>
+                                <div className="w-full bg-white/10 h-1 rounded-full overflow-hidden mb-2">
+                                  <div className="bg-blue-500 h-full" style={{ width: `${task.progress}%` }} />
+                                </div>
+                                <div className="flex items-center justify-between mt-3">
+                                  <div className="flex flex-col">
+                                    <span className="text-[9px] text-blue-400 font-bold">{task.progress}% Complete</span>
+                                    {(() => {
+                                      const assignee = staffList.find(s => s.name.toLowerCase() === task.assignedTo.toLowerCase());
+                                      if (assignee?.role === 'TECHNICIAN') {
+                                        const officer = staffList.find(s => s.id === assignee.supervisorId);
+                                        return (
+                                          <div className="flex flex-col mt-1">
+                                            <span className="text-[8px] text-blue-400 font-bold">Officer: {officer?.name || 'N/A'}</span>
+                                            <span className="text-[8px] text-gray-500">Tech: {assignee.name}</span>
+                                          </div>
+                                        );
+                                      } else if (assignee?.role === 'OFFICER') {
+                                        return <span className="text-[8px] text-blue-400 font-bold mt-1">Officer: {assignee.name}</span>;
+                                      }
+                                      return null;
+                                    })()}
+                                  </div>
+                                  <span className="text-[9px] text-gray-400">Started: {task.startedAt ? new Date(task.startedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</span>
+                                </div>
+                              </div>
+                            ))}
+                            {engineerTasks.filter(t => t.status === 'RUNNING').length === 0 && (
+                              <p className="text-[10px] text-gray-600 italic">No running tasks</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Completed Tasks */}
+                        <div className="space-y-4">
+                          <h4 className="text-xs font-bold text-green-500 uppercase tracking-widest flex items-center gap-2">
+                            <CheckCircle2 size={14} />
+                            Completed Tasks
+                          </h4>
+                          <div className="space-y-3">
+                            {engineerTasks.filter(t => t.status === 'COMPLETED').map(task => (
+                              <div key={task.id} className="p-3 rounded-xl bg-green-500/5 border border-green-500/10 hover:border-green-500/20 transition-all cursor-pointer group" onClick={() => { setSelectedTask(task); setIsTaskDetailsModalOpen(true); }}>
+                                <div className="flex justify-between items-start mb-2">
+                                  <h5 className="text-sm font-bold truncate pr-2">{task.title}</h5>
+                                  <CheckCircle size={14} className="text-green-500" />
+                                </div>
+                                <div className="flex items-center justify-between mt-3">
+                                  <div className="flex flex-col">
+                                    <span className="text-[9px] text-green-400 font-bold">Done</span>
+                                    {(() => {
+                                      const assignee = staffList.find(s => s.name.toLowerCase() === task.assignedTo.toLowerCase());
+                                      if (assignee?.role === 'TECHNICIAN') {
+                                        const officer = staffList.find(s => s.id === assignee.supervisorId);
+                                        return (
+                                          <div className="flex flex-col mt-1">
+                                            <span className="text-[8px] text-blue-400 font-bold">Officer: {officer?.name || 'N/A'}</span>
+                                            <span className="text-[8px] text-gray-500">Tech: {assignee.name}</span>
+                                          </div>
+                                        );
+                                      } else if (assignee?.role === 'OFFICER') {
+                                        return <span className="text-[8px] text-blue-400 font-bold mt-1">Officer: {assignee.name}</span>;
+                                      }
+                                      return null;
+                                    })()}
+                                  </div>
+                                  <span className="text-[9px] text-gray-400">Finished: {task.completedAt ? new Date(task.completedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</span>
+                                </div>
+                              </div>
+                            ))}
+                            {engineerTasks.filter(t => t.status === 'COMPLETED').length === 0 && (
+                              <p className="text-[10px] text-gray-600 italic">No completed tasks</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </GlassCard>
+                  );
+                })}
+
+                {staffList.filter(s => {
+                  if (s.role !== 'ENGINEER') return false;
+                  if (user.assignedEngineers && user.assignedEngineers.length > 0) {
+                    return user.assignedEngineers.includes(s.employeeId);
+                  }
+                  return true;
+                }).length === 0 && (
+                  <div className="py-20 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                    <p className="text-gray-500">No Engineers found in your assigned scope.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* General Work Section (HOD, DHOD & Executive Only) */}
+              {(user?.role === 'HOD' || user?.role === 'DHOD' || user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO') && (
+                <div className="mt-12">
+                  <h2 className="text-xl font-bold mb-6 text-blue-400 flex items-center gap-2">
+                    <Wrench size={24} />
+                    General Work Monitoring
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {tasks.filter(t => t.model === 'General Work').map(task => (
+                      <GlassCard key={task.id} className="p-4 border-blue-500/20">
+                         <div className="flex justify-between items-start mb-3">
+                           <h3 className="font-bold text-white">{task.title}</h3>
+                           <span className={cn(
+                             "text-[10px] font-bold px-2 py-1 rounded-full",
+                             task.status === 'RUNNING' ? "bg-blue-500/20 text-blue-500" :
+                             task.status === 'PENDING' ? "bg-amber-500/20 text-amber-500" :
+                             "bg-green-500/20 text-green-500"
+                           )}>
+                             {task.status}
+                           </span>
+                         </div>
+                         <p className="text-xs text-gray-500 line-clamp-2 mb-4">{task.details}</p>
+                         <div className="flex items-center justify-between pt-3 border-t border-white/5">
+                           <div className="flex items-center gap-2">
+                             <div className="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-[10px] font-bold">
+                               {task.assignedTo[0]}
+                             </div>
+                             <span className="text-[10px] text-gray-400">{task.assignedTo}</span>
+                           </div>
+                           <button 
+                             onClick={() => { setSelectedTask(task); setIsTaskDetailsModalOpen(true); }}
+                             className="text-[10px] text-blue-400 font-bold hover:underline"
+                           >
+                             View Details
+                           </button>
+                         </div>
+                      </GlassCard>
+                    ))}
+                    {tasks.filter(t => t.model === 'General Work').length === 0 && (
+                      <div className="col-span-full py-12 text-center bg-white/5 rounded-2xl border border-dashed border-white/10">
+                        <p className="text-gray-500 italic">No general work tasks found.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'mywork' && (
+            <div className="space-y-6">
+              <h1 className="text-3xl font-bold">Technician Workspace</h1>
+              <div className="grid grid-cols-1 gap-6">
+                {tasks.filter(t => t.assignedTo === user?.id || t.assignedTo.toLowerCase() === user?.name?.toLowerCase()).map(task => (
+                  <GlassCard key={task.id} className="flex flex-col md:flex-row gap-6 items-center">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h3 className="text-xl font-bold">{task.title}</h3>
+                        <span className={cn(
+                          "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
+                          task.status === 'PENDING' ? "bg-gray-500/20 text-gray-400" :
+                          task.status === 'RUNNING' ? "bg-amber-500/20 text-amber-500" :
+                          task.status === 'COMPLETED' ? "bg-green-500/20 text-green-500" :
+                          task.status === 'HOLD' ? "bg-red-500/20 text-red-500" :
+                          "bg-blue-500/20 text-blue-500"
+                        )}>
+                          {task.status}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-400 mt-1">{task.details}</p>
+                      {task.status === 'HOLD' && task.remarks && (
+                        <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                          <p className="text-[10px] text-red-400 uppercase font-bold mb-1">Hold Remarks:</p>
+                          <p className="text-xs text-gray-300 italic">{task.remarks}</p>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-4 mt-4 text-xs text-gray-500">
+                        <div className="flex items-center gap-1">
+                          <Clock size={14} />
+                          <span>Deadline: <span className="font-black text-red-500">{new Date(task.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}</span></span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <AlertCircle size={14} />
+                          <span className="capitalize">{task.urgency.toLowerCase()}</span>
+                        </div>
+                        {task.status !== 'HOLD' && (
+                          <div className="flex items-center gap-1 font-bold text-blue-400">
+                            <span>{task.progress}% Complete</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-4">
+                      {task.status === 'COMPLETED' ? (
+                        <div className="flex items-center gap-2 text-green-500 font-bold">
+                          <CheckCircle2 size={20} />
+                          <span>Completed</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 text-blue-400 font-bold italic text-sm">
+                          <Info size={16} />
+                          <span>View Only Mode</span>
+                        </div>
+                      )}
+                    </div>
+                  </GlassCard>
+                ))}
+                {tasks.filter(t => t.assignedTo === user?.id || t.assignedTo.toLowerCase() === user?.name?.toLowerCase()).length === 0 && (
+                   <div className="py-20 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                     <p className="text-gray-500">No tasks assigned to you yet.</p>
+                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'analytics' && (
+            <div className="space-y-8 pb-12">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <h1 className="text-3xl font-bold">Department Analytics</h1>
+                    <div className="flex items-center gap-1.5 bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 rounded-xl">
+                      <Calendar size={14} className="text-amber-400" />
+                      <span className="text-[10px] uppercase font-bold text-amber-300">Month:</span>
+                      <select
+                        value={analyticsMonth}
+                        onChange={(e) => setAnalyticsMonth(e.target.value)}
+                        className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
+                        title="Select Month for Analytics (Defaults to Running Month)"
+                      >
+                        {availableMonths.map(m => (
+                          <option key={m} value={m} className="bg-[#0f0f12] text-white">
+                            {m === runningMonthKey ? `${formatMonthYearLabel(m)} (Running Month)` : formatMonthYearLabel(m)}
+                          </option>
+                        ))}
+                        <option value="ALL" className="bg-[#0f0f12] text-white">All Time / All Months</option>
+                      </select>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Showing scoped analytics for <span className="text-amber-400 font-bold">{formatMonthYearLabel(analyticsMonth)}{analyticsMonth === runningMonthKey ? ' (Running Month)' : ''}</span>
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-gray-400 bg-white/5 px-3 py-1.5 rounded-xl border border-white/10">
+                  <Clock size={14} className="text-blue-400" />
+                  <span>Last updated: {new Date().toLocaleTimeString()}</span>
+                </div>
+              </div>
+
+              {/* Authorized Analytics View Selector */}
+              {canViewEngineerAnalytics && (
+                <div className="flex flex-wrap items-center justify-between gap-4 p-2 bg-white/[0.03] border border-white/10 rounded-2xl">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setAnalyticsViewMode('OFFICER')}
+                      className={cn(
+                        "flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all",
+                        analyticsViewMode === 'OFFICER'
+                          ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20"
+                          : "text-gray-400 hover:text-white hover:bg-white/5"
+                      )}
+                    >
+                      <Award size={16} />
+                      <span>Officer & Department Stats</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setAnalyticsViewMode('ENGINEER');
+                        if (!engineerAnalyticsData) {
+                          fetchEngineerAnalytics();
+                        }
+                      }}
+                      className={cn(
+                        "flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all",
+                        analyticsViewMode === 'ENGINEER'
+                          ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20"
+                          : "text-gray-400 hover:text-white hover:bg-white/5"
+                      )}
+                    >
+                      <Activity size={16} />
+                      <span>Engineer Performance Analytics</span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-white/20">
+                        NEW
+                      </span>
+                    </button>
+                  </div>
+
+                  {analyticsViewMode === 'ENGINEER' && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/10 text-xs">
+                        {(['all', 'today', 'week', 'month', 'custom'] as const).map(p => (
+                          <button
+                            key={p}
+                            onClick={() => {
+                              setEngineerAnalyticsPeriod(p);
+                              if (p !== 'custom') {
+                                fetchEngineerAnalytics(undefined, p);
+                              }
+                            }}
+                            className={cn(
+                              "px-3 py-1.5 rounded-lg font-bold capitalize transition-all",
+                              engineerAnalyticsPeriod === p
+                                ? "bg-blue-500 text-white shadow-md shadow-blue-500/30"
+                                : "text-gray-400 hover:text-white"
+                            )}
+                          >
+                            {p === 'all' ? 'All Time' : p === 'week' ? 'This Week' : p === 'month' ? 'This Month' : p}
+                          </button>
+                        ))}
+                      </div>
+
+                      {engineerAnalyticsPeriod === 'custom' && (
+                        <div className="flex items-center gap-2 bg-white/5 px-2.5 py-1 rounded-xl border border-white/10 text-xs">
+                          <input
+                            type="date"
+                            value={customStartDate}
+                            onChange={(e) => setCustomStartDate(e.target.value)}
+                            className="bg-black/40 border border-white/10 rounded px-2 py-1 text-white text-xs"
+                          />
+                          <span className="text-gray-400 text-xs">to</span>
+                          <input
+                            type="date"
+                            value={customEndDate}
+                            onChange={(e) => setCustomEndDate(e.target.value)}
+                            className="bg-black/40 border border-white/10 rounded px-2 py-1 text-white text-xs"
+                          />
+                          <button
+                            onClick={() => fetchEngineerAnalytics(undefined, 'custom', customStartDate, customEndDate)}
+                            disabled={!customStartDate || !customEndDate}
+                            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-1 rounded font-bold text-xs"
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      )}
+
+                      <button
+                        onClick={() => fetchEngineerAnalytics()}
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white border border-white/10"
+                        title="Refresh Engineer Analytics"
+                      >
+                        <RefreshCw size={14} className={isLoadingEngineerAnalytics ? "animate-spin" : ""} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {canViewEngineerAnalytics && analyticsViewMode === 'ENGINEER' ? (
+                <div className="space-y-6">
+                  {/* Scope Header Banner */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-900/30 via-indigo-900/20 to-purple-900/20 border border-blue-500/30 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400">
+                        <Activity size={20} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-base font-bold text-white">Engineer Performance Command</h2>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                            {engineerAnalyticsData?.scopeLabel || "Scoped Engineering Analytics"}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          Tracking point-eligible completed tasks, active running workloads, and awaiting engineer recommendations
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-400 bg-black/40 px-3 py-1.5 rounded-xl border border-white/10">
+                      Period: <span className="font-bold text-white capitalize">{engineerAnalyticsPeriod}</span>
+                    </div>
+                  </div>
+
+                  {/* Metric Cards */}
+                  <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-4", canViewPoints ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
+                    {/* Card 1: Eligible Earned Points */}
+                    {canViewPoints && (
+                      <GlassCard className="p-5 border-emerald-500/20 hover:border-emerald-500/40 transition-all">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Eligible Earned Points</span>
+                          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+                            <Award size={18} />
+                          </div>
+                        </div>
+                        <div className="text-3xl font-black text-white">
+                          {engineerAnalyticsData?.summary?.totalEarnedPoints ?? 0}
+                        </div>
+                        <p className="text-[11px] text-gray-400 mt-1">
+                          Verified & approved task points in period
+                        </p>
+                      </GlassCard>
+                    )}
+
+                    {/* Card 2: Completed Tasks */}
+                    <GlassCard className="p-5 border-blue-500/20 hover:border-blue-500/40 transition-all">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-xs font-bold uppercase tracking-wider text-blue-400">Completed Tasks</span>
+                        <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400">
+                          <CheckCircle2 size={18} />
+                        </div>
+                      </div>
+                      <div className="text-3xl font-black text-white">
+                        {engineerAnalyticsData?.summary?.totalCompletedTasks ?? 0}
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        Finished assignments meeting eligibility
+                      </p>
+                    </GlassCard>
+
+                    {/* Card 3: Active Workload (Running & Pending) */}
+                    <GlassCard className="p-5 border-amber-500/20 hover:border-amber-500/40 transition-all">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-xs font-bold uppercase tracking-wider text-amber-400">Active Workload</span>
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-400">
+                          <Activity size={18} />
+                        </div>
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-3xl font-black text-amber-400">
+                          {engineerAnalyticsData?.summary?.totalRunningWorkload ?? 0}
+                        </span>
+                        <span className="text-xs text-gray-400 font-bold uppercase">Running</span>
+                        <span className="text-gray-500">/</span>
+                        <span className="text-xl font-bold text-purple-400">
+                          {engineerAnalyticsData?.summary?.totalPendingWorkload ?? 0}
+                        </span>
+                        <span className="text-xs text-gray-400 font-bold uppercase">Pending</span>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        Workload tracked separately from earned points
+                      </p>
+                    </GlassCard>
+
+                    {/* Card 4: Awaiting Recommendation Queue */}
+                    <GlassCard className="p-5 border-rose-500/20 hover:border-rose-500/40 transition-all">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-xs font-bold uppercase tracking-wider text-rose-400">Awaiting Recommendation</span>
+                        <div className="w-8 h-8 rounded-lg bg-rose-500/20 flex items-center justify-center text-rose-400">
+                          <Clock size={18} />
+                        </div>
+                      </div>
+                      <div className="text-3xl font-black text-rose-400">
+                        {engineerAnalyticsData?.summary?.totalAwaitingRecommendations ?? 0}
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        Officer tasks pending engineer recommendation
+                      </p>
+                    </GlassCard>
+                  </div>
+
+                  {/* Charts Grid */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Dual-Bar Chart: Engineer Comparison */}
+                    <GlassCard className="p-6 h-[420px] flex flex-col">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                          <Award className="text-emerald-400" size={18} />
+                          <h3 className="text-base font-bold text-white">
+                            {canViewPoints ? "Engineer Points & Tasks Comparison" : "Engineer Tasks Comparison"}
+                          </h3>
+                        </div>
+                        <span className="text-xs text-gray-400 font-mono">
+                          {engineerAnalyticsData?.engineers?.length || 0} Engineers
+                        </span>
+                      </div>
+                      <div className="flex-1 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={engineerAnalyticsData?.engineers || []} margin={{ bottom: 40, right: 10 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                            <XAxis 
+                              dataKey="name" 
+                              stroke="#94a3b8" 
+                              fontSize={11} 
+                              tickLine={false} 
+                              axisLine={false}
+                              interval={0}
+                              angle={-30}
+                              textAnchor="end"
+                              height={50}
+                            />
+                            <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                            <Tooltip 
+                              contentStyle={{ backgroundColor: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', fontSize: '12px' }}
+                              itemStyle={{ color: '#fff' }}
+                            />
+                            <Legend iconType="circle" wrapperStyle={{ paddingTop: '10px' }} />
+                            {canViewPoints && (
+                              <Bar dataKey="earnedPoints" name="Earned Points" fill="#10b981" radius={[4, 4, 0, 0]} />
+                            )}
+                            <Bar dataKey="completedTasks" name="Completed Tasks" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </GlassCard>
+
+                    {/* Model Distribution Comparison */}
+                    <GlassCard className="p-6 h-[420px] flex flex-col">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                          <AirVent className="text-purple-400" size={18} />
+                          <h3 className="text-base font-bold text-white">
+                            {canViewPoints ? "Model Distribution (Points & Workload)" : "Model Distribution (Workload)"}
+                          </h3>
+                        </div>
+                        <span className="text-xs text-gray-400 font-mono">
+                          {engineerAnalyticsData?.modelDistribution?.length || 0} Models
+                        </span>
+                      </div>
+                      <div className="flex-1 w-full">
+                        {engineerAnalyticsData?.modelDistribution?.length > 0 ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={engineerAnalyticsData?.modelDistribution || []} margin={{ bottom: 40, right: 10 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                              <XAxis 
+                                dataKey="name" 
+                                stroke="#94a3b8" 
+                                fontSize={11} 
+                                tickLine={false} 
+                                axisLine={false} 
+                                angle={-30}
+                                textAnchor="end"
+                                height={50}
+                              />
+                              <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                              <Tooltip 
+                                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', fontSize: '12px' }}
+                                itemStyle={{ color: '#fff' }}
+                              />
+                              <Legend iconType="circle" wrapperStyle={{ paddingTop: '10px' }} />
+                              {canViewPoints && (
+                                <Bar dataKey="points" name="Earned Points" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                              )}
+                              <Bar dataKey="completed" name="Completed" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                              <Bar dataKey="running" name="Running Workload" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <div className="h-full flex flex-col items-center justify-center text-gray-500 text-xs">
+                            <AirVent className="mb-2 opacity-40" size={24} />
+                            <span>No model data recorded for the selected period</span>
+                          </div>
+                        )}
+                      </div>
+                    </GlassCard>
+                  </div>
+
+                  {/* Comprehensive Engineer Performance Table */}
+                  <GlassCard className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h3 className="text-base font-bold text-white">Engineer Performance Breakdown</h3>
+                        <p className="text-xs text-gray-400">Detailed metric breakdown by individual engineer</p>
+                      </div>
+                      <span className="text-xs text-blue-400 font-mono font-bold bg-blue-500/10 px-3 py-1 rounded-full border border-blue-500/20">
+                        {engineerAnalyticsData?.engineers?.length || 0} Active Records
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="text-gray-400 border-b border-white/10 text-xs font-bold uppercase tracking-wider">
+                            <th className="pb-3">Rank</th>
+                            <th className="pb-3">Engineer Name</th>
+                            <th className="pb-3">ID</th>
+                            <th className="pb-3">Section</th>
+                            <th className="pb-3 text-right">Completed</th>
+                            <th className="pb-3 text-right">Running</th>
+                            <th className="pb-3 text-right">Pending</th>
+                            <th className="pb-3 text-right">Awaiting Rec.</th>
+                            {canViewPoints && (
+                              <th className="pb-3 text-right text-emerald-400">Earned Points</th>
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {(engineerAnalyticsData?.engineers || []).map((eng: any, idx: number) => {
+                            const isMe = user && (user.id === eng.id || user.employeeId === eng.employeeId);
+                            return (
+                              <tr 
+                                key={eng.id || eng.employeeId} 
+                                className={cn(
+                                  "transition-colors",
+                                  isMe ? "bg-blue-500/15 border-l-2 border-blue-500 hover:bg-blue-500/20" : "hover:bg-white/5"
+                                )}
+                              >
+                                <td className="py-3 font-mono text-gray-400">
+                                  {idx === 0 ? '🥇 #1' : idx === 1 ? '🥈 #2' : idx === 2 ? '🥉 #3' : `#${idx + 1}`}
+                                </td>
+                                <td className="py-3 font-bold flex items-center gap-2">
+                                  <span className={isMe ? "text-blue-300 font-black" : "text-white"}>{eng.name}</span>
+                                  {isMe && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-300 font-bold border border-blue-500/50">
+                                      You
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3 font-mono text-xs text-gray-400">{eng.employeeId}</td>
+                                <td className="py-3 text-xs text-gray-300">{eng.section}</td>
+                                <td className="py-3 text-right font-mono text-blue-400 font-bold">{eng.completedTasks}</td>
+                                <td className="py-3 text-right font-mono text-amber-400">{eng.runningWorkload}</td>
+                                <td className="py-3 text-right font-mono text-purple-400">{eng.pendingWorkload}</td>
+                                <td className="py-3 text-right font-mono text-rose-400 font-bold">{eng.awaitingRecommendations}</td>
+                                {canViewPoints && (
+                                  <td className="py-3 text-right text-emerald-400 font-black text-base">{eng.earnedPoints}</td>
+                                )}
+                              </tr>
+                            );
+                          })}
+                          {(!engineerAnalyticsData?.engineers || engineerAnalyticsData.engineers.length === 0) && (
+                            <tr>
+                              <td colSpan={canViewPoints ? 9 : 8} className="py-8 text-center text-gray-500 text-xs">
+                                No engineer performance data found for the selected filter.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </GlassCard>
+
+                  {/* Awaiting Recommendation Queue (Interactive Quick-Review) */}
+                  {engineerAnalyticsData?.awaitingTasksList?.length > 0 && (
+                    <GlassCard className="p-6 border border-rose-500/30 bg-gradient-to-r from-rose-950/20 via-transparent to-transparent">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                          <Clock className="text-rose-400" size={18} />
+                          <div>
+                            <h3 className="text-base font-bold text-white">Pending Officer Tasks Awaiting In-Charge / HOD / DHOD Recommendation</h3>
+                            <p className="text-xs text-gray-400">
+                              These Officer-created tasks will award points to the Concern Engineer once recommended by authorized In-Charge, HOD, or DHOD
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-xs font-mono font-bold text-rose-400 bg-rose-500/10 px-2.5 py-1 rounded-full border border-rose-500/20">
+                          {engineerAnalyticsData.awaitingTasksList.length} Tasks
+                        </span>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="text-gray-400 border-b border-white/10 uppercase tracking-wider">
+                              <th className="pb-2.5">Task ID</th>
+                              <th className="pb-2.5">Title</th>
+                              <th className="pb-2.5">Model</th>
+                              <th className="pb-2.5">Officer</th>
+                              <th className="pb-2.5">Urgency</th>
+                              <th className="pb-2.5">Status</th>
+                              <th className="pb-2.5 text-right">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {engineerAnalyticsData.awaitingTasksList.map((t: any) => (
+                              <tr key={t.id} className="hover:bg-white/5 transition-colors">
+                                <td className="py-2.5 font-mono text-gray-300">{t.taskId || t.id.slice(-6)}</td>
+                                <td className="py-2.5 font-bold text-white">{t.title}</td>
+                                <td className="py-2.5 text-gray-300">{t.model || '-'}</td>
+                                <td className="py-2.5 text-gray-300">{t.officerName}</td>
+                                <td className="py-2.5">
+                                  <span className={cn(
+                                    "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                                    t.urgency === 'MOST_URGENT' ? "bg-rose-500/20 text-rose-300 border border-rose-500/30" :
+                                    t.urgency === 'URGENT' ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" :
+                                    "bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                                  )}>
+                                    {t.urgency}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 font-mono text-gray-400">{t.status}</td>
+                                <td className="py-2.5 text-right">
+                                  <button
+                                    onClick={() => {
+                                      const matchedTask = tasks.find(x => x.id === t.id);
+                                      if (matchedTask) {
+                                        setSelectedTask(matchedTask);
+                                        setIsTaskDetailsModalOpen(true);
+                                      }
+                                    }}
+                                    className={cn(
+                                      "px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all inline-flex items-center gap-1.5",
+                                      canRecommendTask 
+                                        ? "bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-500/20" 
+                                        : "bg-white/10 hover:bg-white/15 text-gray-300"
+                                    )}
+                                  >
+                                    {canRecommendTask && <Zap size={12} className="text-amber-300" />}
+                                    <span>{canRecommendTask ? 'View & Recommend' : 'View Task'}</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </GlassCard>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-8">
+                  {/* Month Overview Summary Cards */}
+                  <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-4", canViewPoints ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
+                    <GlassCard className="p-5 border-blue-500/20 hover:border-blue-500/40 transition-all">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-blue-400">Total Tasks</span>
+                        <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400">
+                          <CheckCircle2 size={18} />
+                        </div>
+                      </div>
+                      <div className="text-3xl font-black text-white">{analyticsSummary.totalTasks}</div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        {formatMonthYearLabel(analyticsMonth)} total tasks
+                      </p>
+                    </GlassCard>
+
+                    <GlassCard className="p-5 border-emerald-500/20 hover:border-emerald-500/40 transition-all">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Completed Tasks</span>
+                        <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+                          <CheckCircle2 size={18} />
+                        </div>
+                      </div>
+                      <div className="text-3xl font-black text-emerald-400">{analyticsSummary.completedTasks}</div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        {analyticsSummary.pendingTasks} pending in period
+                      </p>
+                    </GlassCard>
+
+                    {canViewPoints && (
+                      <GlassCard className="p-5 border-amber-500/20 hover:border-amber-500/40 transition-all">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold uppercase tracking-wider text-amber-400">Verified Points</span>
+                          <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-400">
+                            <Award size={18} />
+                          </div>
+                        </div>
+                        <div className="text-3xl font-black text-amber-400">{analyticsSummary.totalPoints} pts</div>
+                        <p className="text-[11px] text-gray-400 mt-1">
+                          Total Officer points for {formatMonthYearLabel(analyticsMonth)}
+                        </p>
+                      </GlassCard>
+                    )}
+
+                    <GlassCard className="p-5 border-purple-500/20 hover:border-purple-500/40 transition-all">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-purple-400">Active Officers</span>
+                        <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center text-purple-400">
+                          <Activity size={18} />
+                        </div>
+                      </div>
+                      <div className="text-3xl font-black text-purple-400">{analyticsSummary.activeOfficers}</div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        Officers with recorded tasks
+                      </p>
+                    </GlassCard>
+                  </div>
+
+                  {/* Officer Personal Performance Banner */}
+                  {user?.role === 'OFFICER' && (
+                <GlassCard className="p-5 border border-amber-500/30 bg-gradient-to-r from-amber-500/10 via-blue-500/5 to-transparent">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                        <Award size={24} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-xl font-bold text-white">{user.name}</h2>
+                          <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">Officer</span>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          Employee ID: <span className="font-mono text-gray-300">{user.employeeId}</span> &bull; Performance Tracking
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-6">
+                      <div className="text-center">
+                        <p className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Your Rank</p>
+                        <p className="text-2xl font-black text-amber-400">
+                          {(() => {
+                            const rankIdx = topOfficers.findIndex(o => o.id === user.id || o.employeeId === user.employeeId);
+                            return rankIdx !== -1 ? `#${rankIdx + 1}` : 'N/A';
+                          })()}
+                        </p>
+                      </div>
+                      {canViewPoints && (
+                        <>
+                          <div className="h-8 w-px bg-white/10" />
+                          <div className="text-center">
+                            <p className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Period Points</p>
+                            <p className="text-2xl font-black text-amber-400">
+                              {Math.max(getValidOfficerPoints(user.employeeId, analyticsMonth), getValidOfficerPoints(user.id, analyticsMonth))}
+                            </p>
+                          </div>
+                        </>
+                      )}
+                      <div className="h-8 w-px bg-white/10" />
+                      <div className="text-center">
+                        <p className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Completed Tasks</p>
+                        <p className="text-2xl font-black text-blue-400">
+                          {Math.max(getValidOfficerTaskCount(user.employeeId, analyticsMonth), getValidOfficerTaskCount(user.id, analyticsMonth))}
+                        </p>
+                      </div>
+                      {canViewPoints && (
+                        <>
+                          <div className="h-8 w-px bg-white/10" />
+                          <div className="text-center">
+                            <p className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Running Month</p>
+                            <p className="text-2xl font-black text-emerald-400">
+                              {Math.max(getValidOfficerPoints(user.employeeId, runningMonthKey), getValidOfficerPoints(user.id, runningMonthKey))} pts
+                            </p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </GlassCard>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Task Completion Trend */}
+                <GlassCard className="h-[450px] flex flex-col">
+                  <div className="flex items-center gap-2 mb-6">
+                    <TrendingUp className="text-blue-500" size={20} />
+                    <h3 className="text-lg font-bold">Weekly Task Trend</h3>
+                  </div>
+                  <div className="flex-1 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={trend}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                        <XAxis 
+                          dataKey="name" 
+                          stroke="#94a3b8" 
+                          fontSize={12} 
+                          tickLine={false} 
+                          axisLine={false} 
+                        />
+                        <YAxis 
+                          stroke="#94a3b8" 
+                          fontSize={12} 
+                          tickLine={false} 
+                          axisLine={false} 
+                        />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px', fontSize: '12px' }}
+                          itemStyle={{ color: '#fff' }}
+                        />
+                        <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
+                        <Line 
+                          type="monotone" 
+                          dataKey="completed" 
+                          stroke="#10b981" 
+                          strokeWidth={3} 
+                          dot={{ r: 4, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }}
+                          activeDot={{ r: 6 }}
+                        />
+                        <Line 
+                          type="monotone" 
+                          dataKey="pending" 
+                          stroke="#3b82f6" 
+                          strokeWidth={3} 
+                          dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }}
+                          activeDot={{ r: 6 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </GlassCard>
+
+                {/* Model Distribution */}
+                <GlassCard className="h-[450px] flex flex-col">
+                  <div className="flex items-center gap-2 mb-6">
+                    <AirVent className="text-purple-500" size={20} />
+                    <h3 className="text-lg font-bold">Model Distribution</h3>
+                  </div>
+                  <div className="flex-1 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={modelDistribution}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={100}
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          {modelDistribution.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'][index % 7]} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px', fontSize: '12px' }}
+                          itemStyle={{ color: '#fff' }}
+                        />
+                        <Legend layout="vertical" align="right" verticalAlign="middle" />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </GlassCard>
+
+                {/* Top Performing Officers */}
+                <GlassCard className="flex flex-col">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-2">
+                      <Award className="text-amber-500" size={20} />
+                      <h3 className="text-lg font-bold">
+                        {canViewPoints ? `Officer Performance & Points (${formatMonthYearLabel(analyticsMonth)})` : `Officer Performance (${formatMonthYearLabel(analyticsMonth)})`}
+                      </h3>
+                    </div>
+                    <span className="text-xs text-amber-400 font-mono font-bold bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                      {topOfficers.length} {topOfficers.length === 1 ? 'Officer' : 'Officers'}
+                    </span>
+                  </div>
+                  
+                  {topOfficersForChart.length > 0 ? (
+                    <div className="h-[300px] w-full overflow-x-auto custom-scrollbar mb-6">
+                      <div className="min-w-[600px] h-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={topOfficersForChart} margin={{ bottom: 60 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                            <XAxis 
+                              dataKey="name" 
+                              stroke="#94a3b8" 
+                              fontSize={10} 
+                              tickLine={false} 
+                              axisLine={false} 
+                              interval={0}
+                              angle={-45}
+                              textAnchor="end"
+                              height={80}
+                            />
+                            <YAxis 
+                              stroke="#94a3b8" 
+                              fontSize={12} 
+                              tickLine={false} 
+                              axisLine={false} 
+                            />
+                            <Tooltip 
+                              cursor={{ fill: '#ffffff05' }}
+                              contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px', fontSize: '12px' }}
+                              itemStyle={{ color: '#fff' }}
+                              labelStyle={{ color: '#3b82f6', fontWeight: 'bold', marginBottom: '4px' }}
+                            />
+                            <Bar 
+                              dataKey={canViewPoints ? "points" : "count"} 
+                              name={canViewPoints ? "Total Points" : "Completed Tasks"} 
+                              radius={[4, 4, 0, 0]} 
+                              fill={canViewPoints ? "#f59e0b" : "#3b82f6"} 
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-44 flex flex-col items-center justify-center text-gray-400 text-sm border border-white/5 rounded-2xl mb-6 bg-white/[0.02]">
+                      <Award className="text-amber-500/40 mb-2" size={28} />
+                      <p className="font-semibold text-gray-300">
+                        {canViewPoints ? "No Task Points Recorded Yet" : "No Completed Tasks Recorded Yet"}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {canViewPoints 
+                          ? "Only officers who have earned task points will be displayed here."
+                          : "Only officers with completed tasks will be displayed here."}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="text-gray-500 border-b border-white/5">
+                          <th className="pb-3 font-bold uppercase tracking-wider">Rank</th>
+                          <th className="pb-3 font-bold uppercase tracking-wider">Officer Name</th>
+                          <th className="pb-3 font-bold uppercase tracking-wider">Employee ID</th>
+                          {canViewPoints && <th className="pb-3 font-bold uppercase tracking-wider text-right">Points</th>}
+                          <th className="pb-3 font-bold uppercase tracking-wider text-right">Tasks</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {topOfficers.map((off, idx) => {
+                          const isMe = user && (user.id === off.id || user.employeeId === off.employeeId);
+                          return (
+                            <tr key={off.id || off.name} className={cn(
+                              "transition-colors",
+                              isMe ? "bg-amber-500/15 border-l-2 border-amber-500 hover:bg-amber-500/20" : "hover:bg-white/5"
+                            )}>
+                              <td className="py-3 font-mono text-gray-400">
+                                {idx === 0 ? '🥇 #1' : idx === 1 ? '🥈 #2' : idx === 2 ? '🥉 #3' : `#${idx + 1}`}
+                              </td>
+                              <td className="py-3 font-bold flex items-center gap-2">
+                                <span className={isMe ? "text-amber-300 font-black" : "text-white"}>{off.name}</span>
+                                {isMe && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/30 text-amber-300 font-bold border border-amber-500/50">
+                                    You
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 font-mono text-xs text-gray-400">{off.employeeId || '-'}</td>
+                              {canViewPoints && <td className="py-3 text-right text-amber-500 font-black text-base">{off.points}</td>}
+                              <td className="py-3 text-right text-gray-400 font-mono">{off.count}</td>
+                            </tr>
+                          );
+                        })}
+                        {topOfficers.length === 0 && (
+                          <tr>
+                            <td colSpan={canViewPoints ? 5 : 4} className="py-8 text-center text-gray-500">
+                              {canViewPoints 
+                                ? "No officers with task points recorded yet. Only officers with active points are shown."
+                                : "No completed tasks recorded yet."}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </GlassCard>
+
+                {/* Top Performing Technicians */}
+                <GlassCard className="flex flex-col">
+                  <div className="flex items-center gap-2 mb-6">
+                    <Award className="text-blue-500" size={20} />
+                    <h3 className="text-lg font-bold">Top Performing Technicians ({formatMonthYearLabel(analyticsMonth)})</h3>
+                  </div>
+                  
+                  <div className="h-[300px] w-full overflow-x-auto custom-scrollbar mb-6">
+                    <div className="min-w-[600px] h-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={topTechnicians} margin={{ bottom: 60 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                          <XAxis 
+                            dataKey="name" 
+                            stroke="#94a3b8" 
+                            fontSize={10} 
+                            tickLine={false} 
+                            axisLine={false} 
+                            interval={0}
+                            angle={-45}
+                            textAnchor="end"
+                            height={80}
+                          />
+                          <YAxis 
+                            stroke="#94a3b8" 
+                            fontSize={12} 
+                            tickLine={false} 
+                            axisLine={false} 
+                          />
+                          <Tooltip 
+                            cursor={{ fill: '#ffffff05' }}
+                            contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px', fontSize: '12px' }}
+                            itemStyle={{ color: '#fff' }}
+                            labelStyle={{ color: '#10b981', fontWeight: 'bold', marginBottom: '4px' }}
+                          />
+                          <Bar dataKey="tasks" name="Completed Tasks" radius={[4, 4, 0, 0]} fill="#3b82f6" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="text-gray-500 border-b border-white/5">
+                          <th className="pb-3 font-bold uppercase tracking-wider">Rank</th>
+                          <th className="pb-3 font-bold uppercase tracking-wider">Technician Name</th>
+                          <th className="pb-3 font-bold uppercase tracking-wider text-right">Completed Tasks</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {topTechnicians.map((tech, idx) => (
+                          <tr key={tech.name} className="hover:bg-white/5 transition-colors">
+                            <td className="py-3 font-mono text-gray-400">#{idx + 1}</td>
+                            <td className="py-3 font-bold">{tech.name}</td>
+                            <td className="py-3 text-right text-blue-500 font-black">{tech.tasks}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </GlassCard>
+
+                {/* Summary Stats */}
+                <div className="grid grid-cols-2 gap-4 lg:col-span-2">
+                  <GlassCard className="p-6 flex flex-col items-center justify-center text-center">
+                    <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">Total Tasks</p>
+                    <p className="text-5xl font-black">{filteredTasks.length}</p>
+                  </GlassCard>
+                  <GlassCard className="p-6 flex flex-col items-center justify-center text-center">
+                    <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">Completion Rate</p>
+                    <p className="text-5xl font-black text-green-500">
+                      {filteredTasks.length > 0 ? Math.round((filteredTasks.filter(t => t.status === 'COMPLETED').length / filteredTasks.length) * 100) : 0}%
+                    </p>
+                  </GlassCard>
+                  <GlassCard className="p-6 flex flex-col items-center justify-center text-center">
+                    <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">Avg. Progress</p>
+                    <p className="text-5xl font-black text-blue-500">
+                      {filteredTasks.length > 0 ? Math.round(filteredTasks.reduce((acc, t) => acc + t.progress, 0) / filteredTasks.length) : 0}%
+                    </p>
+                  </GlassCard>
+                  <GlassCard className="p-6 flex flex-col items-center justify-center text-center">
+                    <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">Active Staff</p>
+                    <p className="text-5xl font-black text-purple-500">
+                      {user?.role === 'SUPER_ADMIN' || user?.role === 'CBO' || user?.role === 'DCBO' || user?.role === 'HOD' || user?.role === 'DHOD'
+                        ? staffList.length 
+                        : staffList.filter(s => s.supervisorId === user?.id || s.id === user?.id).length}
+                    </p>
+                  </GlassCard>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+          {/* Reject Request Modal */}
+      <AnimatePresence>
+        {isRejectModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="w-full max-w-md bg-[#1a1a1f] border border-white/10 rounded-3xl overflow-hidden shadow-2xl"
+            >
+              <div className="p-6 border-b border-white/5 flex justify-between items-center">
+                <h3 className="text-xl font-bold flex items-center gap-2">
+                  <X className="text-red-500" />
+                  Reject Task Request
+                </h3>
+                <button onClick={() => setIsRejectModalOpen(false)} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <p className="text-gray-400 text-sm">Please provide a reason for rejecting this technician request. This is mandatory.</p>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Rejection Remarks</label>
+                  <textarea
+                    value={rejectRemarks}
+                    onChange={(e) => setRejectRemarks(e.target.value)}
+                    placeholder="Enter reason for rejection..."
+                    className="w-full bg-white/5 border border-white/10 rounded-xl p-4 text-white focus:outline-none focus:ring-2 focus:ring-red-500/50 min-h-[120px]"
+                  />
+                </div>
+              </div>
+              <div className="p-6 bg-white/5 flex gap-3">
+                <button
+                  onClick={() => setIsRejectModalOpen(false)}
+                  className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white font-bold rounded-xl transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    if (!rejectRemarks.trim()) {
+                      toast.error('Rejection remarks are mandatory');
+                      return;
+                    }
+                    handleRejectRequest(rejectTaskId!, rejectRemarks);
+                    setIsRejectModalOpen(false);
+                  }}
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-all shadow-lg shadow-red-500/20"
+                >
+                  Confirm Reject
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Task Details Modal */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleRestoreClick}
+            className="hidden"
+            accept=".json"
+          />
+          <AnimatePresence>
+            {isRestoreConfirmOpen && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  className="w-full max-w-sm"
+                >
+                  <GlassCard className="p-8 text-center border-amber-500/30">
+                    <div className="w-16 h-16 bg-amber-500/20 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                      <AlertCircle size={32} />
+                    </div>
+                    <h3 className="text-xl font-bold mb-2">Confirm System Restore</h3>
+                    <p className="text-gray-400 text-sm mb-8">
+                      Are you sure you want to restore the system from "{pendingRestoreFile?.name}"? 
+                      This will replace all current users and tasks.
+                    </p>
+                    <div className="flex gap-3">
+                      <button 
+                        onClick={() => {
+                          setIsRestoreConfirmOpen(false);
+                          setPendingRestoreFile(null);
+                          if (fileInputRef.current) fileInputRef.current.value = '';
+                        }}
+                        className="flex-1 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button 
+                        onClick={executeRestore}
+                        className="flex-1 py-3 bg-amber-600 hover:bg-amber-700 rounded-xl font-bold transition-all"
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  </GlassCard>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {isTaskDetailsModalOpen && selectedTask && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="w-full max-w-2xl max-h-[90vh] overflow-y-auto custom-scrollbar"
+                >
+                  <GlassCard className="p-8">
+                    <div className="flex items-center justify-between mb-8">
+                      <h2 className="text-2xl font-bold">Task Details</h2>
+                      <button onClick={() => setIsTaskDetailsModalOpen(false)} className="p-2 hover:bg-white/5 rounded-lg text-gray-400">
+                        <X size={24} />
+                      </button>
+                    </div>
+
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Task ID</p>
+                          <p className="text-blue-400 font-mono">{selectedTask.taskId}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Status</p>
+                          <div className="flex flex-col gap-1">
+                            <p className={cn(
+                              "text-sm font-bold",
+                              selectedTask.status === 'HOLD' ? "text-red-400" : 
+                              selectedTask.status === 'COMPLETED' ? "text-green-400" : "text-blue-400"
+                            )}>
+                              {selectedTask.status}
+                            </p>
+                            {selectedTask.status === 'HOLD' && selectedTask.remarks && (
+                              <p className="text-[10px] text-red-400 italic bg-red-500/10 p-2 rounded-lg border border-red-500/20">
+                                Remarks: {selectedTask.remarks}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Assignment Details</p>
+                          {selectedTask.workType === 'TEAM' ? (
+                            <p className="text-blue-400 font-bold">Team Work ({selectedTask.assignedTechnicians?.length} Technicians)</p>
+                          ) : (
+                            (() => {
+                              const assignee = staffList.find(s => s.id === selectedTask.assignedTo || s.name.toLowerCase() === selectedTask.assignedTo.toLowerCase());
+                              if (assignee?.role === 'TECHNICIAN') {
+                                const officer = staffList.find(s => s.id === assignee.supervisorId);
+                                return (
+                                  <>
+                                    <p className="text-white font-bold">Tech: {assignee.name} ({assignee.employeeId})</p>
+                                    <p className="text-[10px] text-blue-400 mt-1">Officer: {officer?.name || 'N/A'}</p>
+                                  </>
+                                );
+                              } else if (assignee?.role === 'OFFICER') {
+                                return (
+                                  <>
+                                    <p className="text-white font-bold">Officer: {assignee.name} ({assignee.employeeId})</p>
+                                    <p className="text-[10px] text-gray-500 mt-1">Tech: Not assigned yet</p>
+                                  </>
+                                );
+                              } else if (assignee?.role === 'ENGINEER') {
+                                const officer = staffList.find(s => s.supervisorId === assignee.id && s.role === 'OFFICER');
+                                return (
+                                  <>
+                                    <p className="text-white font-bold">Engr: {assignee.name} ({assignee.employeeId})</p>
+                                    <p className="text-[10px] text-blue-400 mt-1">Officer: {officer?.name || 'N/A'}</p>
+                                  </>
+                                );
+                              } else {
+                                return <p className="text-white font-bold">{staffList.find(s => s.id === selectedTask.assignedTo)?.name || selectedTask.assignedTo}</p>;
+                              }
+                            })()
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Concern</p>
+                          <p className="text-blue-400 font-bold">
+                            {(() => {
+                              const officer = staffList.find(s => s.employeeId === selectedTask.assignedBy);
+                              return officer ? `${officer.name} (${officer.employeeId})` : selectedTask.assignedBy || 'N/A';
+                            })()}
+                          </p>
+                        </div>
+                        {canViewPoints && (
+                          <div>
+                            <p className="text-xs text-gray-400 uppercase tracking-widest">Points</p>
+                            <p className="text-blue-400 font-bold">{selectedTask.points || 0}</p>
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Deadline</p>
+                          <p className="text-red-500 font-black">
+                            {selectedTask.deadline ? new Date(selectedTask.deadline).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'No Deadline'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {selectedTask.workType === 'TEAM' && (
+                        <div className="p-4 bg-blue-500/5 border border-blue-500/10 rounded-xl space-y-4">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-bold text-blue-400">Team Progress Monitoring</h3>
+                            <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-1 rounded">
+                              Total: {selectedTask.totalTeamProgress || 0}%
+                            </span>
+                          </div>
+                          <div className="space-y-3">
+                            {selectedTask.assignedTechnicians?.map((tech, idx) => (
+                              <div key={tech.employeeId} className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs text-gray-300 font-medium">{tech.name} ({tech.employeeId})</span>
+                                  <span className="text-xs text-blue-400">{tech.progress}%</span>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                  <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-blue-500 transition-all duration-500"
+                                      style={{ width: `${tech.progress}%` }}
+                                    />
+                                  </div>
+                                  {user?.role === 'OFFICER' && (
+                                    <input 
+                                      type="range"
+                                      min="0"
+                                      max="100"
+                                      value={tech.progress}
+                                      onChange={(e) => {
+                                        const newProgress = parseInt(e.target.value);
+                                        const newTechs = [...(selectedTask.assignedTechnicians || [])];
+                                        newTechs[idx] = { 
+                                          ...newTechs[idx], 
+                                          progress: newProgress,
+                                          status: newProgress === 100 ? 'COMPLETED' : 'RUNNING',
+                                          completedAt: newProgress === 100 ? new Date().toISOString() : undefined
+                                        };
+                                        handleUpdateTask(selectedTask.id, { 
+                                          assignedTechnicians: newTechs,
+                                          remarks: `Updated progress for ${tech.name} to ${newProgress}%`
+                                        });
+                                      }}
+                                      className="w-24 h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                    />
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-widest mb-2">Title</p>
+                        <p className="text-lg font-bold text-white">{selectedTask.title}</p>
+                      </div>
+
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-widest mb-2">Details</p>
+                        <p className="text-sm text-gray-300 bg-white/5 p-4 rounded-xl border border-white/10">{selectedTask.details}</p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Started At</p>
+                          <p className="text-white text-sm">
+                            {(selectedTask.customStartTime || selectedTask.startedAt || selectedTask.createdAt)
+                              ? new Date(selectedTask.customStartTime || selectedTask.startedAt || selectedTask.createdAt).toLocaleString()
+                              : 'Not Started'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Completed At</p>
+                          <p className="text-white text-sm">
+                            {(selectedTask.actualCompletionTime || selectedTask.completedAt)
+                              ? new Date(selectedTask.actualCompletionTime || selectedTask.completedAt!).toLocaleString()
+                              : 'In Progress'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Estimated Duration</p>
+                          <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                            <p className="text-white text-sm font-semibold">
+                              {selectedTask.revisedEstimatedDuration || selectedTask.estimatedDuration}
+                            </p>
+                            {selectedTask.originalEstimatedDuration && selectedTask.revisedEstimatedDuration && selectedTask.originalEstimatedDuration !== selectedTask.revisedEstimatedDuration && (
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                                Original: {selectedTask.originalEstimatedDuration}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Time Taken</p>
+                          <p className="text-white text-sm">
+                            {selectedTask.taskTakenTime || calculateDuration(selectedTask.customStartTime || selectedTask.startedAt || selectedTask.createdAt, selectedTask.actualCompletionTime || selectedTask.completedAt, selectedTask)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-widest mb-2">Smart Shift-Based Working Timer</p>
+                        <SmartTaskTimer
+                          task={selectedTask}
+                          userRole={user?.role}
+                          onOpenOvertime={setSelectedOvertimeTask}
+                          onOpenExtension={setSelectedExtensionTask}
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs text-gray-400 uppercase tracking-widest">Task Attachments</p>
+                          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold cursor-pointer transition-all">
+                            <Upload size={13} />
+                            <span>{isUploadingAttachment ? 'Uploading...' : 'Attach File'}</span>
+                            <input
+                              type="file"
+                              multiple
+                              disabled={isUploadingAttachment}
+                              className="hidden"
+                              onChange={(e) => {
+                                handleUploadTaskAttachments(selectedTask.id, e.target.files);
+                                e.target.value = '';
+                              }}
+                            />
+                          </label>
+                        </div>
+                        <div className="space-y-2">
+                          {(selectedTask.attachments || []).map((att) => (
+                            <div key={att.id} className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <FileText size={16} className="text-blue-400 shrink-0" />
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-white truncate">{att.originalName}</p>
+                                  <p className="text-[10px] text-gray-400">
+                                    {(att.sizeBytes / 1024).toFixed(1)} KB &bull; Uploaded by {att.uploadedByName || att.uploadedBy}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <a
+                                  href={att.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  download={att.originalName}
+                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/15 text-blue-300 transition-colors"
+                                  title="Download file"
+                                >
+                                  <Download size={14} />
+                                </a>
+                                {(user?.role === 'SUPER_ADMIN' || user?.employeeId === att.uploadedBy || canUpdateTask(selectedTask, user)) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteTaskAttachment(selectedTask.id, att.id)}
+                                    className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors"
+                                    title="Remove attachment"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                          {(!selectedTask.attachments || selectedTask.attachments.length === 0) && (
+                            <p className="text-xs text-gray-500 italic">No files attached to this task.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-widest mb-2">Activity Logs</p>
+                        <div className="space-y-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                          {selectedTask.logs?.map((log) => (
+                            <div key={log.id} className="text-[10px] p-2 rounded-lg bg-white/5 border border-white/5">
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-blue-400 font-bold">{log.user}</span>
+                                <span className="text-gray-500">{new Date(log.timestamp).toLocaleString()}</span>
+                              </div>
+                              <p className="text-gray-300">{log.action}</p>
+                            </div>
+                          ))}
+                          {(!selectedTask.logs || selectedTask.logs.length === 0) && (
+                            <p className="text-xs text-gray-500 italic">No activity logs recorded yet.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-gray-400 uppercase tracking-widest mb-2">Remarks</label>
+                        <textarea 
+                          value={taskRemarks}
+                          onChange={(e) => setTaskRemarks(e.target.value)}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 h-24"
+                          placeholder="Add your remarks here..."
+                        />
+                      </div>
+
+                      {canAssignTask(selectedTask, user) && user?.role === 'OFFICER' && (
+                        <div className="pt-4 border-t border-white/10 space-y-4">
+                          <div className="space-y-3">
+                            <label className="block text-xs text-gray-400 uppercase tracking-widest">Work Type</label>
+                            <div className="flex gap-4">
+                              <div 
+                                onClick={() => {
+                                  setDistributeWorkType('SINGLE');
+                                  setTechSearchQuery('');
+                                }}
+                                className="flex items-center gap-2 cursor-pointer group select-none"
+                              >
+                                <div 
+                                  className={cn(
+                                    "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
+                                    distributeWorkType === 'SINGLE' ? "border-blue-500 bg-blue-500/20" : "border-white/20 group-hover:border-white/40"
+                                  )}
+                                >
+                                  {distributeWorkType === 'SINGLE' && <div className="w-2 h-2 rounded-full bg-blue-500" />}
+                                </div>
+                                <span className={cn("text-sm font-medium transition-colors", distributeWorkType === 'SINGLE' ? "text-white font-bold" : "text-gray-400 group-hover:text-gray-200")}>Single Work</span>
+                              </div>
+                              <div 
+                                onClick={() => {
+                                  setDistributeWorkType('TEAM');
+                                  setTechSearchQuery('');
+                                  if (selectedTechs.length === 0 && assignToTech) {
+                                    const found = staffList.find(s => s.id === assignToTech || s.employeeId === assignToTech || s.name === assignToTech);
+                                    if (found) {
+                                      setSelectedTechs([{ id: found.id, employeeId: found.employeeId, name: found.name, supervisorId: found.supervisorId, supervisor_ids: found.supervisor_ids }]);
+                                    }
+                                  }
+                                }}
+                                className="flex items-center gap-2 cursor-pointer group select-none"
+                              >
+                                <div 
+                                  className={cn(
+                                    "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
+                                    distributeWorkType === 'TEAM' ? "border-blue-500 bg-blue-500/20" : "border-white/20 group-hover:border-white/40"
+                                  )}
+                                >
+                                  {distributeWorkType === 'TEAM' && <div className="w-2 h-2 rounded-full bg-blue-500" />}
+                                </div>
+                                <span className={cn("text-sm font-medium transition-colors", distributeWorkType === 'TEAM' ? "text-white font-bold" : "text-gray-400 group-hover:text-gray-200")}>Team Work</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="block text-xs text-gray-400 uppercase tracking-widest">
+                              {distributeWorkType === 'SINGLE' ? 'Search & Assign Technician' : 'Search & Add Team Members'}
+                            </label>
+                            <div className="relative">
+                              <input 
+                                type="text"
+                                placeholder={distributeWorkType === 'SINGLE' && assignToTech ? "Search to change technician..." : "Search by ID or Name..."}
+                                value={techSearchQuery}
+                                onChange={(e) => setTechSearchQuery(e.target.value)}
+                                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 pr-10"
+                              />
+                              {techSearchQuery && (
+                                <button
+                                  type="button"
+                                  onClick={() => setTechSearchQuery('')}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white p-1"
+                                  title="Clear search"
+                                >
+                                  <X size={16} />
+                                </button>
+                              )}
+                              {techSearchQuery.trim() && (
+                                <div className="absolute z-20 w-full mt-2 bg-[#1a1a1e] border border-white/15 rounded-xl shadow-2xl max-h-56 overflow-y-auto">
+                                  {(() => {
+                                    const query = techSearchQuery.trim().toLowerCase();
+                                    const filtered = staffList.filter(s => 
+                                      s.role === 'TECHNICIAN' && (
+                                        (s.name && s.name.toLowerCase().includes(query)) || 
+                                        (s.employeeId && s.employeeId.includes(query))
+                                      )
+                                    );
+                                    if (filtered.length === 0) {
+                                      return (
+                                        <div className="px-4 py-3 text-sm text-gray-400">
+                                          No technicians found matching &quot;{techSearchQuery}&quot;
+                                        </div>
+                                      );
+                                    }
+                                    return filtered.map(s => {
+                                      const isSupervised = s.supervisorId === user?.id || 
+                                        s.supervisorId === user?.employeeId || 
+                                        (Array.isArray(s.supervisor_ids) && s.supervisor_ids.includes(user?.employeeId));
+                                      const techStatus = getTechnicianStatus(s.employeeId).status;
+                                      return (
+                                        <button
+                                          key={s.id}
+                                          type="button"
+                                          onClick={() => {
+                                            if (distributeWorkType === 'SINGLE') {
+                                              setAssignToTech(s.id);
+                                              setTechSearchQuery('');
+                                            } else {
+                                              const techObj = {
+                                                id: s.id,
+                                                employeeId: s.employeeId,
+                                                name: s.name,
+                                                supervisorId: s.supervisorId,
+                                                supervisor_ids: s.supervisor_ids
+                                              };
+                                              if (!selectedTechs.some(t => (t.id && t.id === s.id) || (t.employeeId && t.employeeId === s.employeeId))) {
+                                                setSelectedTechs([...selectedTechs, techObj]);
+                                              }
+                                              setTechSearchQuery('');
+                                            }
+                                          }}
+                                          className="w-full text-left px-4 py-3 hover:bg-white/10 text-sm text-gray-300 border-b border-white/5 last:border-0 transition-colors flex items-center justify-between group"
+                                        >
+                                          <div>
+                                            <div className="font-semibold text-white group-hover:text-blue-400 flex items-center gap-2">
+                                              <span>{s.name}</span>
+                                              <span className="text-xs text-blue-300/70 font-mono">({s.employeeId})</span>
+                                            </div>
+                                            <div className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-2">
+                                              <span className={cn(
+                                                "px-1.5 py-0.5 rounded text-[10px]",
+                                                techStatus === 'Working' ? "text-amber-400 font-medium" : "text-emerald-400 font-medium"
+                                              )}>
+                                                {techStatus === 'Working' ? '● Working' : '● Free'}
+                                              </span>
+                                              <span>•</span>
+                                              <span className={isSupervised ? "text-gray-300" : "text-amber-300"}>
+                                                {isSupervised ? 'My Team' : 'Other Team'}
+                                              </span>
+                                            </div>
+                                          </div>
+                                          <span className="text-xs text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity font-medium">
+                                            {distributeWorkType === 'SINGLE' ? 'Select →' : 'Add +'}
+                                          </span>
+                                        </button>
+                                      );
+                                    });
+                                  })()}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Single Work: Selected Technician with Remove button */}
+                          {distributeWorkType === 'SINGLE' && assignToTech && (() => {
+                            const selectedTech = staffList.find(s => s.id === assignToTech || s.employeeId === assignToTech || s.name === assignToTech);
+                            if (!selectedTech) return null;
+                            const isSupervised = selectedTech.supervisorId === user?.id || 
+                              selectedTech.supervisorId === user?.employeeId || 
+                              (Array.isArray(selectedTech.supervisor_ids) && selectedTech.supervisor_ids.includes(user?.employeeId));
+                            const techStatus = getTechnicianStatus(selectedTech.employeeId).status;
+
+                            return (
+                              <div className="p-3.5 bg-blue-500/10 border border-blue-500/30 rounded-xl flex items-center justify-between animate-in fade-in">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-9 h-9 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400 font-bold text-sm">
+                                    {selectedTech.name.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-bold text-white flex items-center gap-2">
+                                      <span>{selectedTech.name}</span>
+                                      <span className="text-xs text-blue-300 font-mono">({selectedTech.employeeId})</span>
+                                    </div>
+                                    <div className="text-[11px] text-gray-400 flex items-center gap-2 mt-0.5">
+                                      <span className={cn(
+                                        "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                                        techStatus === 'Working' ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                      )}>
+                                        {techStatus === 'Working' ? 'Working' : 'Free'}
+                                      </span>
+                                      <span className="text-gray-500">•</span>
+                                      <span className={isSupervised ? "text-emerald-400" : "text-amber-400"}>
+                                        {isSupervised ? 'My Team' : 'Other Team (Borrow request)'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <button 
+                                  type="button"
+                                  onClick={() => {
+                                    setAssignToTech('');
+                                    setTechSearchQuery('');
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 hover:text-red-300 border border-red-500/30 transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+                                  title="Remove technician"
+                                >
+                                  <X size={14} />
+                                  <span>Remove</span>
+                                </button>
+                              </div>
+                            );
+                          })()}
+
+                          {/* Team Work: Selected Team Members with Remove buttons */}
+                          {distributeWorkType === 'TEAM' && selectedTechs.length > 0 && (
+                            <div className="space-y-2 mt-2 animate-in fade-in">
+                              <div className="text-xs text-gray-400 font-medium">Selected Team Members ({selectedTechs.length}):</div>
+                              <div className="flex flex-wrap gap-2">
+                                {selectedTechs.map(tech => (
+                                  <div key={tech.id || tech.employeeId} className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/15 border border-blue-500/30 rounded-xl">
+                                    <span className="text-xs font-semibold text-white">{tech.name}</span>
+                                    <span className="text-[11px] text-blue-300 font-mono">({tech.employeeId})</span>
+                                    <button 
+                                      type="button"
+                                      onClick={() => setSelectedTechs(selectedTechs.filter(t => (t.id || t.employeeId) !== (tech.id || tech.employeeId)))}
+                                      className="text-red-400 hover:text-red-300 ml-1 p-0.5 rounded hover:bg-white/10 transition-colors cursor-pointer"
+                                      title="Remove technician"
+                                    >
+                                      <X size={14} />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {(assignToTech || (distributeWorkType === 'TEAM' && selectedTechs.length > 0)) && (
+                            <div className="grid grid-cols-2 gap-3 animate-in fade-in slide-in-from-top-2">
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase mb-1">Duration (Minutes)</label>
+                                <input 
+                                  type="number"
+                                  value={assignDuration}
+                                  onChange={(e) => setAssignDuration(e.target.value)}
+                                  placeholder="Mins"
+                                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                />
+                              </div>
+                              <div className="flex items-end">
+                                <button 
+                                  onClick={() => {
+                                    if (distributeWorkType === 'SINGLE' && !assignToTech) return toast.error('Please select a technician');
+                                    if (distributeWorkType === 'TEAM' && selectedTechs.length === 0) return toast.error('Please select at least one technician');
+                                    if (!assignDuration) return toast.error('Please enter duration');
+                                    
+                                    const updateData: any = {
+                                      workType: distributeWorkType,
+                                      estimatedDuration: assignDuration
+                                    };
+
+                                    if (distributeWorkType === 'SINGLE') {
+                                      updateData.assignedTo = staffList.find(s => s.id === assignToTech)?.name || assignToTech;
+                                      updateData.assignedTechnicians = [];
+                                    } else {
+                                      updateData.assignedTo = 'Team Work';
+                                      updateData.assignedTechnicians = selectedTechs;
+                                    }
+
+                                    handleUpdateTask(selectedTask.id, updateData);
+                                    setTechSearchQuery('');
+                                    setAssignToTech('');
+                                    setSelectedTechs([]);
+                                    setAssignDuration('60');
+                                  }}
+                                  disabled={isLoading}
+                                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-blue-500/20"
+                                >
+                                  {distributeWorkType === 'SINGLE' ? (() => {
+                                    const targetTech = staffList.find(s => s.id === assignToTech || s.employeeId === assignToTech || s.name === assignToTech);
+                                    const isSupervised = targetTech && (
+                                      targetTech.supervisorId === user?.id || 
+                                      targetTech.supervisorId === user?.employeeId || 
+                                      (Array.isArray(targetTech.supervisor_ids) && targetTech.supervisor_ids.includes(user?.employeeId))
+                                    );
+                                    return !isSupervised ? 'Request' : 'Assign';
+                                  })() : 'Assign Team'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* RECOMMENDATION & POINT APPROVAL PANEL (In-Charge, HOD, DHOD, Super Admin) */}
+                      {(() => {
+                        const creatorUser = staffList.find(s => s.employeeId === selectedTask.createdBy || s.id === selectedTask.createdBy);
+                        const isOfficerTask = creatorUser?.role === 'OFFICER' || Boolean(selectedTask.responsibleOfficerId);
+                        const isPendingRec = !selectedTask.engineerApproved || selectedTask.requestStatus === 'RECOMMENDED' || !selectedTask.points || selectedTask.points === 0;
+
+                        if (!isOfficerTask && !isPendingRec && selectedTask.requestStatus !== 'RECOMMENDED') return null;
+
+                        // Case 1: Already Recommended & Points Approved
+                        if (selectedTask.engineerApproved && (selectedTask.points || 0) > 0) {
+                          const recUser = staffList.find(s => s.employeeId === selectedTask.recommendedBy || s.id === selectedTask.recommendedBy);
+                          const ceUser = staffList.find(s => s.employeeId === selectedTask.concernEngineerId || s.id === selectedTask.concernEngineerId);
+                          return (
+                            <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-3 animate-in fade-in">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                                  <CheckCircle2 size={20} />
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-bold text-white">
+                                      {canViewPoints ? 'Recommended & Points Awarded' : 'Recommended & Approved'}
+                                    </span>
+                                    {canViewPoints && (
+                                      <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                        +{selectedTask.points} Points
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-gray-400 mt-0.5">
+                                    Recommended by: <span className="text-white font-medium">{selectedTask.recommendedByName || recUser?.name || selectedTask.recommendedBy || 'Authorized Lead'}</span> ({selectedTask.recommendedRole || 'In-Charge/HOD'}) &bull; {canViewPoints ? 'Credited to Concern Engineer:' : 'Concern Engineer:'} <span className="text-emerald-400 font-bold">{ceUser?.name || selectedTask.concernEngineerId || 'Concern Engineer'}</span>
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        // Case 2: Awaiting Recommendation
+                        return (
+                          <div className="p-5 rounded-2xl bg-gradient-to-br from-amber-950/30 via-[#18181b] to-blue-950/20 border border-amber-500/40 space-y-4 shadow-xl">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                                  <Zap size={20} />
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <h3 className="text-sm font-bold text-white">
+                                      {canViewPoints ? 'Task Recommendation & Point Award' : 'Task Recommendation & Approval'}
+                                    </h3>
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase">
+                                      Awaiting Recommendation
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-gray-400 mt-0.5">
+                                    {canViewPoints 
+                                      ? 'Only In-Charge, HOD, and DHOD can recommend this Officer task. Recommended points will be credited to the Concern Engineer.'
+                                      : 'Only In-Charge, HOD, and DHOD can recommend this Officer task.'}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {canRecommendTask ? (
+                              <div className="space-y-4 pt-3 border-t border-white/10">
+                                <div className={cn("grid gap-4", canViewPoints ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1")}>
+                                  {/* Points Selector */}
+                                  {canViewPoints && (
+                                    <div>
+                                      <label className="text-[10px] text-gray-300 uppercase font-bold mb-1.5 block">
+                                        Assign Task Points (1 - 3)
+                                      </label>
+                                      <div className="flex gap-2">
+                                        {[1, 2, 3].map(p => (
+                                          <button
+                                            key={p}
+                                            type="button"
+                                            onClick={() => setModalRecPoints(p)}
+                                            className={cn(
+                                              "flex-1 py-2.5 rounded-xl text-xs font-bold transition-all border cursor-pointer",
+                                              modalRecPoints === p 
+                                                ? "bg-blue-600 text-white border-blue-400 shadow-lg shadow-blue-500/30 scale-102" 
+                                                : "bg-white/5 text-gray-300 border-white/10 hover:bg-white/10"
+                                            )}
+                                          >
+                                            {p} Point{p > 1 ? 's' : ''}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Target Concern Engineer */}
+                                  <div>
+                                    <label className="text-[10px] text-gray-300 uppercase font-bold mb-1.5 block">
+                                      {canViewPoints ? 'Concern Engineer (Receives Points)' : 'Concern Engineer'}
+                                    </label>
+                                    <select
+                                      value={modalRecConcernEngId}
+                                      onChange={(e) => setModalRecConcernEngId(e.target.value)}
+                                      className="w-full bg-[#18181b] border border-white/15 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                    >
+                                      <option value="">-- Select Concern Engineer --</option>
+                                      {staffList.filter(s => s.role === 'ENGINEER').map(eng => {
+                                        const isAssigned = creatorUser && Array.isArray(creatorUser.assignedEngineers) && creatorUser.assignedEngineers.includes(eng.employeeId);
+                                        return (
+                                          <option key={eng.employeeId} value={eng.employeeId}>
+                                            {eng.name} ({eng.employeeId}){isAssigned ? ' ★ Assigned to Officer' : ''}
+                                          </option>
+                                        );
+                                      })}
+                                    </select>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <label className="text-[10px] text-gray-300 uppercase font-bold mb-1 block">
+                                    Set / Confirm Deadline (Optional)
+                                  </label>
+                                  <input 
+                                    type="date"
+                                    value={modalRecDeadline}
+                                    onChange={(e) => setModalRecDeadline(e.target.value)}
+                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                  />
+                                </div>
+
+                                <div className="flex items-center gap-3 pt-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRecommendFromModal(selectedTask.id)}
+                                    disabled={isSubmittingRec}
+                                    className="flex-1 py-3 px-4 bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 disabled:opacity-50 text-white text-xs font-black rounded-xl transition-all shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 cursor-pointer"
+                                  >
+                                    <Zap size={16} className="text-amber-300" />
+                                    <span>
+                                      {isSubmittingRec 
+                                        ? 'Submitting...' 
+                                        : canViewPoints 
+                                          ? `Recommend & Award +${modalRecPoints} Points to Engineer` 
+                                          : 'Recommend & Approve Task'}
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setRejectTaskId(selectedTask.id);
+                                      setIsRejectModalOpen(true);
+                                    }}
+                                    disabled={isSubmittingRec}
+                                    className="px-4 py-3 bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-600/30 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs text-gray-400 flex items-center gap-2">
+                                <Clock size={16} className="text-amber-400 shrink-0" />
+                                <span>Only authorized In-Charge, HOD, and DHOD can submit recommendations for this task. Once recommended, points will be credited to the Concern Engineer.</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      <div className="flex gap-4 pt-4">
+                        {canUpdateTask(selectedTask, user) && (
+                          <button 
+                            onClick={() => handleUpdateTask(selectedTask.id, { remarks: taskRemarks })}
+                            disabled={isLoading}
+                            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition-all"
+                          >
+                            Save Remarks
+                          </button>
+                        )}
+                        {user?.role === 'TECHNICIAN' && selectedTask.status !== 'COMPLETED' && (
+                          <button 
+                            onClick={() => handleUpdateTask(selectedTask.id, { 
+                              status: selectedTask.status === 'PENDING' ? 'RUNNING' : 'COMPLETED',
+                              progress: selectedTask.status === 'PENDING' ? 50 : 100,
+                              completedAt: selectedTask.status === 'RUNNING' ? new Date().toISOString() : undefined
+                            })}
+                            disabled={isLoading}
+                            className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition-all"
+                          >
+                            {selectedTask.status === 'PENDING' ? 'Start Task' : 'Complete Task'}
+                          </button>
+                        )}
+                        {canDeleteTask(selectedTask, user) && (
+                          <button 
+                            onClick={() => setTaskToDelete(selectedTask.id)}
+                            disabled={isLoading}
+                            className="px-4 py-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/30 font-bold rounded-xl transition-all flex items-center justify-center gap-2"
+                            title="Delete Task"
+                          >
+                            <Trash2 size={18} />
+                            <span>Delete</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </GlassCard>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+        </div>
+      </main>
+      </div>
+      <ShiftManagementModal
+        isOpen={isShiftModalOpen}
+        onClose={() => setIsShiftModalOpen(false)}
+        token={localStorage.getItem('token') || ''}
+        users={staffList}
+        onShiftsUpdated={() => {
+          const token = localStorage.getItem('token');
+          if (token) fetchSmartTimerData(token);
+        }}
+      />
+      <OvertimeModal
+        isOpen={!!selectedOvertimeTask}
+        onClose={() => setSelectedOvertimeTask(null)}
+        task={selectedOvertimeTask}
+        token={localStorage.getItem('token') || ''}
+        userRole={user?.role}
+        userName={user?.name}
+        userEmployeeId={user?.employeeId}
+        onOvertimeUpdated={() => {
+          const token = localStorage.getItem('token');
+          if (token) {
+            fetchSmartTimerData(token);
+            fetchTasks(token, true);
+          }
+        }}
+      />
+      <TimeExtensionModal
+        isOpen={!!selectedExtensionTask}
+        onClose={() => setSelectedExtensionTask(null)}
+        task={selectedExtensionTask}
+        token={localStorage.getItem('token') || ''}
+        onExtended={(updatedTask) => {
+          setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
+          if (selectedTask?.id === updatedTask.id) setSelectedTask(updatedTask);
+          const token = localStorage.getItem('token');
+          if (token) fetchTasks(token, true);
+        }}
+      />
+      <Toaster position="top-right" richColors />
+    </div>
+    </TaskTimerContext.Provider>
+    </ThemeContext.Provider>
+  );
+}

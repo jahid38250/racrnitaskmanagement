@@ -1,0 +1,89 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: rac_task_mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+06:00
+    environment:
+      TZ: ${TZ:-Asia/Dhaka}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-task_management}
+      MYSQL_USER: ${MYSQL_USER:-taskadmin}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - backend_internal
+    # IMPORTANT SECURITY: MySQL port 3306 is intentionally NOT exposed to the office LAN.
+    # Only the backend app container on backend_internal can communicate with MySQL.
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rac_task_app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: ${PORT:-3000}
+      TZ: ${TZ:-Asia/Dhaka}
+      APP_URL: ${APP_URL:-http://0.0.0.0:80}
+      JWT_SECRET: ${JWT_SECRET}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-task_management}
+      MYSQL_USER: ${MYSQL_USER:-taskadmin}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+      - ./uploads:/app/uploads
+    networks:
+      - backend_internal
+      - frontend_proxy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/system/db-status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: rac_task_nginx
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./uploads:/app/uploads:ro
+    networks:
+      - frontend_proxy
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  backend_internal:
+    internal: true
+  frontend_proxy:
+    driver: bridge
